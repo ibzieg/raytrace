@@ -1,0 +1,69 @@
+# Three Suzannes in the box room: glass, chrome and plaster. Photon mapping
+# gives color bleeding from the walls and a caustic under the glass one.
+
+[camera]
+eye = [0.0, 0.0, 10.0]
+target = [0.0, 0.0, 0.0]
+near = 9.0
+far = 1000.0
+window = { left = -5.0, right = 5.0, bottom = -5.0, top = 5.0 }
+
+[[light]]
+position = [0.0, 6.5, -9.0]
+diffuse = [0.5, 0.5, 0.5]
+specular = [1.0, 1.0, 1.0]
+
+[[material]]
+name = "glass"
+kd = [0.9, 0.9, 0.9]
+ks = [1.0, 1.0, 1.0]
+shininess = 200.0
+reflectivity = 0.08
+transmissivity = 0.9
+
+[[material]]
+name = "chrome"
+kd = [0.2, 0.2, 0.2]
+ks = [1.0, 1.0, 1.0]
+shininess = 200.0
+reflectivity = 0.85
+
+[[material]]
+name = "plaster"
+kd = [0.85, 0.82, 0.75]
+ks = [0.2, 0.2, 0.2]
+shininess = 16.0
+
+[[object]]
+mesh = "../objects/BoxRoom3.obj"
+
+[[object]]
+mesh = "../objects/monkey_head.obj"
+translate = [-4.6, -5.45, -12.0]
+rotate = [90.0, 25.0, 0.0]  # modeled facing +Y; turn to face the camera
+scale = 0.5
+material = "glass"
+
+[[object]]
+mesh = "../objects/monkey_head.obj"
+translate = [0.0, -5.45, -14.0]
+rotate = [90.0, 0.0, 0.0]
+scale = 0.5
+material = "chrome"
+
+[[object]]
+mesh = "../objects/monkey_head.obj"
+translate = [4.6, -5.45, -12.0]
+rotate = [90.0, -25.0, 0.0]
+scale = 0.5
+material = "plaster"
+
+[render]
+height = 600
+samples = 4
+max_depth = 6
+
+[photon]
+enabled = true
+photons_per_light = 300000
+radius = { direct = 0.8, indirect = 1.2, caustic = 0.3 }

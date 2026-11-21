@@ -1,0 +1,8 @@
+# 2x2 quad in the XZ plane at y = 0, facing +Y. Scale it into a floor or
+# rotate it into a wall. Give it a material with `material = "..."`.
+v -1 0  1
+v  1 0  1
+v  1 0 -1
+v -1 0 -1
+s off
+f 1 2 3 4

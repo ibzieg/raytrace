@@ -1,0 +1,87 @@
+# A soccer ball, a gold torus and a silver goblet. The soccer ball's MTL file
+# never existed, so its "black" and "white" materials are supplied here by
+# name; the goblet has no MTL at all and gets one per object.
+
+[camera]
+eye = [0.5, 3.2, 9.0]
+target = [0.0, 1.6, 0.0]
+near = 1.0
+far = 1000.0
+window = { left = -0.5333, right = 0.5333, bottom = -0.4, top = 0.4 }
+
+[[light]]
+position = [4.0, 9.0, 6.0]
+diffuse = [0.8, 0.78, 0.72]
+specular = [1.0, 1.0, 1.0]
+
+[[light]]
+position = [-6.0, 4.0, 5.0]
+diffuse = [0.2, 0.22, 0.28]
+specular = [0.2, 0.2, 0.25]
+
+[[material]]  # replaces the soccer ball's missing MTL material
+name = "white"
+ka = [0.05, 0.05, 0.05]
+kd = [0.9, 0.9, 0.9]
+ks = [0.5, 0.5, 0.5]
+shininess = 40.0
+
+[[material]]
+name = "black"
+kd = [0.05, 0.05, 0.05]
+ks = [0.5, 0.5, 0.5]
+shininess = 40.0
+
+[[material]]
+name = "gold"
+kd = [0.8, 0.6, 0.2]
+ks = [1.0, 0.85, 0.5]
+shininess = 120.0
+reflectivity = 0.55
+
+[[material]]
+name = "silver"
+kd = [0.3, 0.3, 0.32]
+ks = [1.0, 1.0, 1.0]
+shininess = 150.0
+reflectivity = 0.75
+
+[[material]]
+name = "table"
+kd = [0.45, 0.32, 0.22]
+ks = [0.15, 0.12, 0.1]
+shininess = 20.0
+reflectivity = 0.1
+
+[[object]]
+mesh = "../objects/quad.obj"
+scale = 10.0
+material = "table"
+
+[[object]]
+mesh = "../objects/soccerball_tri.obj"
+translate = [-2.4, 1.4, 0.5]
+rotate = [20.0, 30.0, 0.0]
+scale = 0.3
+
+[[object]]
+mesh = "../objects/torus_4_1.obj"
+translate = [2.2, 0.25, 1.8]
+rotate = [0.0, 0.0, 0.0]
+scale = 0.2
+material = "gold"
+
+[[object]]
+mesh = "../objects/Goblet.obj"
+translate = [1.0, -0.14, -1.2]
+scale = 0.035
+material = "silver"
+
+[render]
+height = 600
+samples = 4
+max_depth = 8
+soft_shadows = true
+shadow_rays = 4
+shadow_jitter = 0.08
+background = [0.06, 0.06, 0.07]

@@ -1,0 +1,58 @@
+# The Utah teapot on a checkered floor, lit warm and cool, with soft shadows.
+
+[camera]
+eye = [0.0, 4.5, 9.5]
+target = [0.0, 1.2, 0.0]
+near = 1.0
+far = 1000.0
+window = { left = -0.5333, right = 0.5333, bottom = -0.4, top = 0.4 }
+
+[[light]]  # warm key
+position = [5.0, 8.0, 6.0]
+diffuse = [0.75, 0.62, 0.5]
+specular = [1.0, 0.9, 0.8]
+
+[[light]]  # cool fill
+position = [-7.0, 5.0, 3.0]
+diffuse = [0.25, 0.3, 0.45]
+specular = [0.3, 0.35, 0.5]
+
+[[material]]
+name = "porcelain"
+ka = [0.03, 0.03, 0.04]
+kd = [0.85, 0.85, 0.9]
+ks = [0.9, 0.9, 0.9]
+shininess = 80.0
+reflectivity = 0.12
+
+[[material]]
+name = "chrome"
+kd = [0.2, 0.2, 0.2]
+ks = [1.0, 1.0, 1.0]
+shininess = 200.0
+reflectivity = 0.9
+
+[[object]]  # modeled Z-up; rotate to Y-up
+mesh = "../objects/teapot.obj"
+rotate = [-90.0, 0.0, 0.0]
+scale = 0.6
+material = "porcelain"
+
+[[object]]  # also Z-up: an XY plane
+mesh = "../objects/CheckerPlane_8x5_280.obj"
+rotate = [-90.0, 0.0, 0.0]
+translate = [0.0, -0.07, 0.0]
+
+[[object]]
+mesh = "../objects/sphere.obj"
+translate = [3.4, 1.0, 1.6]
+material = "chrome"
+
+[render]
+height = 600
+samples = 4
+max_depth = 5
+soft_shadows = true
+shadow_rays = 4
+shadow_jitter = 0.08
+background = [0.04, 0.05, 0.1]

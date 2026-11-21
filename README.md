@@ -16,6 +16,18 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 - N-rooks anti-aliasing; all cores via rayon; deterministic output
 - Converter for the original XML `.scene` files
 
+## Example scenes
+
+All in `assets/scenes/`. The first four were converted from the 2011 project.
+
+| | |
+|---|---|
+| ![](docs/images/caustics.png) `caustics.toml`: glass focusing light (photon mapped) | ![](docs/images/monkeys.png) `monkeys.toml`: glass, chrome and plaster in the box room (photon mapped) |
+| ![](docs/images/teapot.png) `teapot.toml`: two colored lights, soft shadows | ![](docs/images/still_life.png) `still_life.toml`: scene materials on meshes without MTL files |
+| ![](docs/images/mirrors.png) `mirrors.toml`: facing mirrors, 12 bounces | ![](docs/images/box_scene_whitted.png) `box_scene.toml`: the original 2011 scene |
+
+Also from 2011: `box_test_4.toml`, `reflect_ring.toml`, `box_parallelepiped.toml`.
+
 ## Usage
 
 ```sh
@@ -76,9 +88,18 @@ position = [0.0, 6.74, -9.25]
 diffuse = [0.5, 0.5, 0.5]
 specular = [1.0, 1.0, 1.0]
 
+[[material]]              # optional; see below
+name = "glass"
+kd = [0.9, 0.9, 0.9]
+transmissivity = 0.9      # also: ka, ks, shininess, reflectivity, ior
+
 [[object]]
-mesh = "../objects/BoxRoom2.obj"   # relative to the scene file
-transform = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]  # optional
+mesh = "../objects/sphere.obj"     # relative to the scene file
+translate = [0.0, 1.0, 0.0]        # all placement is optional
+rotate = [0.0, 45.0, 0.0]          # degrees about X, then Y, then Z
+scale = 1.5                        # or [x, y, z]
+material = "glass"                 # use this [[material]] for every face
+# transform = [[...], ...]         # raw 4×4 rows, applied before the above
 
 [render]                  # all optional; defaults shown
 height = 600              # width = 0 → follows window aspect
@@ -97,14 +118,28 @@ radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
 exposure = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
 ```
 
+### Materials
+
+A scene `[[material]]` replaces any MTL material with the same name in every
+mesh, or applies to a whole object through `material = "name"`. Unset fields
+default to matte gray (kd 0.8, ks 0.3, shininess 32, no reflection or
+transmission, ior 1.5).
+
+`assets/objects/sphere.obj` (a unit sphere) and `quad.obj` (a 2×2 floor in
+the XZ plane) are handy building blocks. Several of the old meshes are
+modeled Z-up (the teapot, the checker planes) or facing +Y (the monkey head)
+and need a `rotate`.
+
 ### OBJ/MTL extensions
 
 - An `@sphere` line in an OBJ marks it as a perfect sphere, centered on the
   vertex mean with radius reaching the farthest vertex.
 - MTL `Ir` / `It` set the reflected / transmitted fractions of light. A
   `newmtl` without `Ir` defaults to 0.3 reflectivity (the original behavior).
-- Smoothing groups (`s`) are respected; files without any `s` lines are
-  smooth-shaded throughout.
+- Smoothing groups (`s`) are respected. Files without any `s` lines are
+  smooth-shaded except at edges sharper than 60°. Faces are matched by
+  vertex position, so meshes that duplicate vertices per face still shade
+  smoothly.
 
 ## Layout
 

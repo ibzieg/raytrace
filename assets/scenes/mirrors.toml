@@ -1,0 +1,88 @@
+# Two facing mirrors make an endless corridor. Raise max_depth to see more
+# reflections (each bounce costs another ray).
+
+[camera]
+eye = [3.2, 2.6, 5.5]
+target = [-5.0, 1.4, -1.0]
+near = 1.0
+far = 1000.0
+window = { left = -0.5333, right = 0.5333, bottom = -0.4, top = 0.4 }
+
+[[light]]
+position = [0.0, 6.0, 3.0]
+diffuse = [0.8, 0.8, 0.8]
+specular = [1.0, 1.0, 1.0]
+
+[[material]]
+name = "mirror"
+kd = [0.04, 0.05, 0.06]
+ks = [0.0, 0.0, 0.0]
+reflectivity = 0.9
+
+[[material]]
+name = "frame"
+kd = [0.25, 0.18, 0.12]
+ks = [0.3, 0.3, 0.3]
+shininess = 30.0
+
+[[material]]
+name = "floor"
+kd = [0.55, 0.55, 0.6]
+ks = [0.2, 0.2, 0.2]
+reflectivity = 0.05
+
+[[material]]
+name = "red"
+ka = [0.05, 0.0, 0.0]
+kd = [0.85, 0.1, 0.1]
+ks = [0.8, 0.8, 0.8]
+shininess = 90.0
+
+[[object]]
+mesh = "../objects/quad.obj"
+scale = 30.0
+material = "floor"
+
+[[object]]  # left mirror at x = -5, facing +X
+mesh = "../objects/quad.obj"
+translate = [-5.0, 2.5, 0.0]
+rotate = [0.0, 0.0, -90.0]
+scale = [2.5, 1.0, 4.0]
+material = "mirror"
+
+[[object]]  # its frame, just behind
+mesh = "../objects/quad.obj"
+translate = [-5.02, 2.5, 0.0]
+rotate = [0.0, 0.0, -90.0]
+scale = [2.7, 1.0, 4.2]
+material = "frame"
+
+[[object]]  # right mirror at x = 5, facing -X
+mesh = "../objects/quad.obj"
+translate = [5.0, 2.5, 0.0]
+rotate = [0.0, 0.0, 90.0]
+scale = [2.5, 1.0, 4.0]
+material = "mirror"
+
+[[object]]
+mesh = "../objects/quad.obj"
+translate = [5.02, 2.5, 0.0]
+rotate = [0.0, 0.0, 90.0]
+scale = [2.7, 1.0, 4.2]
+material = "frame"
+
+[[object]]
+mesh = "../objects/sphere.obj"
+translate = [-1.5, 1.0, -0.5]
+material = "red"
+
+[[object]]
+mesh = "../objects/hexring.obj"
+translate = [1.0, 0.22, 1.0]
+rotate = [0.0, 30.0, 0.0]
+
+[render]
+height = 600
+samples = 4
+max_depth = 12
+background = [0.12, 0.13, 0.16]

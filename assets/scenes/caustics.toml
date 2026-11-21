@@ -1,0 +1,79 @@
+# Glass spheres focusing light onto a white floor. Best with photon mapping;
+# the caustic map uses a small radius to keep the bright spots sharp.
+
+[camera]
+eye = [0.0, 4.0, 10.0]
+target = [0.0, 1.0, 0.0]
+near = 1.0
+far = 1000.0
+window = { left = -0.5333, right = 0.5333, bottom = -0.4, top = 0.4 }
+
+[[light]]
+position = [1.0, 9.0, 1.0]
+diffuse = [0.9, 0.9, 0.9]
+specular = [1.0, 1.0, 1.0]
+
+[[material]]
+name = "floor"
+kd = [0.85, 0.85, 0.85]
+ks = [0.0, 0.0, 0.0]
+
+[[material]]
+name = "wall"
+kd = [0.55, 0.6, 0.7]
+ks = [0.0, 0.0, 0.0]
+
+[[material]]
+name = "glass"
+kd = [0.9, 0.9, 0.9]
+ks = [1.0, 1.0, 1.0]
+shininess = 200.0
+reflectivity = 0.08
+transmissivity = 0.9
+ior = 1.5
+
+[[material]]
+name = "chrome"
+kd = [0.2, 0.2, 0.2]
+ks = [1.0, 1.0, 1.0]
+shininess = 200.0
+reflectivity = 0.9
+
+[[object]]
+mesh = "../objects/quad.obj"
+scale = 12.0
+material = "floor"
+
+[[object]]  # back wall, facing +Z
+mesh = "../objects/quad.obj"
+translate = [0.0, 6.0, -6.0]
+rotate = [90.0, 0.0, 0.0]
+scale = [12.0, 1.0, 6.0]
+material = "wall"
+
+[[object]]
+mesh = "../objects/sphere.obj"
+translate = [-2.4, 1.5, 0.0]
+scale = 1.5
+material = "glass"
+
+[[object]]
+mesh = "../objects/sphere.obj"
+translate = [1.6, 1.0, 1.8]
+material = "glass"
+
+[[object]]
+mesh = "../objects/sphere.obj"
+translate = [2.6, 1.2, -2.6]
+scale = 1.2
+material = "chrome"
+
+[render]
+height = 600
+samples = 4
+max_depth = 6
+
+[photon]
+enabled = true
+photons_per_light = 1000000
+radius = { direct = 0.9, indirect = 1.5, caustic = 0.15 }

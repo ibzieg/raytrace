@@ -4,6 +4,7 @@
 //! rows, so `transform[r][c]` is row `r`, column `c`, and translation lives in
 //! the last column.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use glam::{DMat4, DVec3, DVec4};
 use serde::{Deserialize, Serialize};
 
+use crate::material::Material;
 use crate::mesh::{Mesh, load_obj};
 
 pub type Rows4 = [[f64; 4]; 4];
@@ -22,6 +24,10 @@ pub struct SceneFile {
     pub lights: Vec<LightDef>,
     #[serde(default, rename = "object", skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<ObjectDef>,
+    /// Materials that replace same-named MTL materials in every mesh, or that
+    /// objects select with `material = "name"`.
+    #[serde(default, rename = "material", skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<MaterialDef>,
     #[serde(default)]
     pub render: RenderSettings,
     #[serde(default)]
@@ -76,6 +82,98 @@ pub struct ObjectDef {
     /// Object-to-world matrix (rows). Identity when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<Rows4>,
+    /// Convenience placement, applied after `transform` as
+    /// translate · rotate · scale. Rotation is in degrees about X, then Y,
+    /// then Z.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translate: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Scale>,
+    /// Name of a scene `[[material]]` to use for every face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Scale {
+    Uniform(f64),
+    Axes([f64; 3]),
+}
+
+impl ObjectDef {
+    pub fn new(mesh: impl Into<PathBuf>) -> Self {
+        Self { mesh: mesh.into(), transform: None, translate: None, rotate: None, scale: None, material: None }
+    }
+
+    /// Object-to-world matrix.
+    pub fn model_matrix(&self) -> DMat4 {
+        let base = self.transform.as_ref().map_or(DMat4::IDENTITY, rows_to_mat);
+        let t = DMat4::from_translation(self.translate.map_or(DVec3::ZERO, DVec3::from));
+        let [rx, ry, rz] = self.rotate.unwrap_or_default().map(f64::to_radians);
+        let r = DMat4::from_rotation_z(rz) * DMat4::from_rotation_y(ry) * DMat4::from_rotation_x(rx);
+        let s = DMat4::from_scale(match self.scale {
+            None => DVec3::ONE,
+            Some(Scale::Uniform(k)) => DVec3::splat(k),
+            Some(Scale::Axes(v)) => v.into(),
+        });
+        t * r * s * base
+    }
+}
+
+/// A material defined in the scene file. Unlike MTL `newmtl` blocks (which
+/// keep the original renderer's defaults), unspecified fields here default
+/// to a plain matte gray.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MaterialDef {
+    pub name: String,
+    #[serde(default)]
+    pub ka: [f64; 3],
+    #[serde(default = "gray3")]
+    pub kd: [f64; 3],
+    #[serde(default = "spec3")]
+    pub ks: [f64; 3],
+    #[serde(default = "default_shininess")]
+    pub shininess: f64,
+    #[serde(default)]
+    pub reflectivity: f64,
+    #[serde(default)]
+    pub transmissivity: f64,
+    #[serde(default = "default_ior")]
+    pub ior: f64,
+}
+
+impl MaterialDef {
+    pub fn to_material(&self) -> Material {
+        Material {
+            name: self.name.clone(),
+            ka: self.ka.into(),
+            kd: self.kd.into(),
+            ks: self.ks.into(),
+            shininess: self.shininess,
+            reflectivity: self.reflectivity,
+            transmissivity: self.transmissivity,
+            ior: self.ior,
+        }
+    }
+}
+
+fn gray3() -> [f64; 3] {
+    [0.8; 3]
+}
+
+fn spec3() -> [f64; 3] {
+    [0.3; 3]
+}
+
+fn default_shininess() -> f64 {
+    32.0
+}
+
+fn default_ior() -> f64 {
+    1.5
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -179,6 +277,40 @@ impl CameraDef {
     }
 }
 
+/// Applies scene materials to a mesh: an object's `material` replaces every
+/// face's material, and scene materials replace same-named MTL ones.
+fn apply_materials(mesh: &mut Mesh, object: &ObjectDef, scene: &HashMap<&str, Material>) -> Result<()> {
+    if let Some(name) = &object.material {
+        let m = scene
+            .get(name.as_str())
+            .with_context(|| format!("{}: no [[material]] named '{name}'", object.mesh.display()))?;
+        mesh.materials = vec![m.clone()];
+        for t in &mut mesh.triangles {
+            t.material = 0;
+        }
+        return Ok(());
+    }
+    for (i, m) in mesh.materials.iter_mut().enumerate() {
+        if let Some(over) = scene.get(m.name.as_str()) {
+            *m = over.clone();
+            mesh.unresolved_materials.retain(|&u| u != i);
+        }
+    }
+    if !mesh.unresolved_materials.is_empty() {
+        for w in &mesh.warnings {
+            eprintln!("warning: {w}");
+        }
+        for &i in &mesh.unresolved_materials {
+            eprintln!(
+                "warning: {}: material '{}' not found; using defaults",
+                object.mesh.display(),
+                mesh.materials[i].name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Right-handed world-to-camera matrix, like `gluLookAt`.
 pub fn look_at(eye: DVec3, target: DVec3, up: DVec3) -> DMat4 {
     let f = (target - eye).normalize();
@@ -209,13 +341,15 @@ impl Scene {
 
     pub fn from_file(file: SceneFile, base_dir: &Path) -> Result<Self> {
         let view = file.camera.view_matrix()?;
+        let scene_materials: HashMap<&str, Material> =
+            file.materials.iter().map(|m| (m.name.as_str(), m.to_material())).collect();
         let objects = file
             .objects
             .iter()
             .map(|o| {
-                let mesh = load_obj(&base_dir.join(&o.mesh))?;
-                let model = o.transform.as_ref().map_or(DMat4::IDENTITY, rows_to_mat);
-                Ok((mesh, model))
+                let mut mesh = load_obj(&base_dir.join(&o.mesh))?;
+                apply_materials(&mut mesh, o, &scene_materials)?;
+                Ok((mesh, o.model_matrix()))
             })
             .collect::<Result<_>>()?;
         Ok(Self { file, view, objects })
@@ -236,5 +370,52 @@ impl Scene {
             (w, 0) => (w, ((w as f64) / aspect).round() as u32),
             (w, h) => (w, h),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placement_composes_translate_rotate_scale() {
+        let o = ObjectDef {
+            translate: Some([1.0, 2.0, 3.0]),
+            rotate: Some([0.0, 90.0, 0.0]),
+            scale: Some(Scale::Uniform(2.0)),
+            ..ObjectDef::new("x.obj")
+        };
+        // Scale, then rotate +X onto -Z, then translate.
+        let p = o.model_matrix().transform_point3(DVec3::X);
+        assert!(p.abs_diff_eq(DVec3::new(1.0, 2.0, 1.0), 1e-12), "{p}");
+    }
+
+    #[test]
+    fn parses_scene_materials_and_scale_forms() {
+        let file: SceneFile = toml::from_str(
+            r#"
+            [camera]
+            eye = [0, 0, 5]
+            target = [0, 0, 0]
+            near = 1
+            far = 100
+            window = { left = -1, right = 1, bottom = -1, top = 1 }
+            [[material]]
+            name = "glass"
+            transmissivity = 0.9
+            [[object]]
+            mesh = "a.obj"
+            scale = [1, 2, 3]
+            material = "glass"
+            [[object]]
+            mesh = "b.obj"
+            scale = 0.5
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(file.objects[0].scale, Some(Scale::Axes([1.0, 2.0, 3.0]))));
+        assert!(matches!(file.objects[1].scale, Some(Scale::Uniform(0.5))));
+        let m = file.materials[0].to_material();
+        assert_eq!((m.transmissivity, m.reflectivity, m.ior), (0.9, 0.0, 1.5));
     }
 }

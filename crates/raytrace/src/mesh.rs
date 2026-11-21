@@ -29,6 +29,11 @@ pub struct Mesh {
     pub materials: Vec<Material>,
     /// Treat as an analytic sphere (`@sphere` flag) instead of triangles.
     pub is_sphere: bool,
+    /// Indices of materials named by `usemtl` but not found in any MTL file.
+    /// They hold default values until a scene supplies them.
+    pub unresolved_materials: Vec<usize>,
+    /// Non-fatal problems, e.g. a missing MTL file.
+    pub warnings: Vec<String>,
 }
 
 impl Mesh {
@@ -53,6 +58,16 @@ impl Mesh {
     }
 }
 
+/// Crease angle for files without smoothing groups.
+const AUTO_SMOOTH_ANGLE_DEG: f64 = 60.0;
+
+/// Vertex position quantized for exact-match lookups.
+type PosKey = [i64; 3];
+
+fn pos_key(p: DVec3) -> PosKey {
+    (p * 1e6).round().to_array().map(|c| c as i64)
+}
+
 struct Polygon {
     verts: Vec<usize>,
     material: usize,
@@ -72,6 +87,8 @@ pub fn load_obj(path: &Path) -> Result<Mesh> {
     let mut smoothing_group = 0;
     let mut saw_smoothing = false;
     let mut is_sphere = false;
+    let mut unresolved_materials = Vec::new();
+    let mut warnings = Vec::new();
 
     for (line_no, raw) in text.lines().enumerate() {
         let line = raw.trim();
@@ -116,27 +133,25 @@ pub fn load_obj(path: &Path) -> Result<Mesh> {
                                 materials.push(m);
                             }
                         }
-                        Err(e) => eprintln!("warning: {e:#}"),
+                        Err(e) => warnings.push(format!("{e:#}")),
                     }
                 }
             }
             "usemtl" => {
                 let name = tokens.next().unwrap_or("");
-                current_material = match material_index.get(name) {
-                    Some(&i) => i,
-                    None => {
-                        eprintln!("warning: {}: unknown material '{name}'", ctx());
-                        0
-                    }
-                };
+                current_material = *material_index.entry(name.to_string()).or_insert_with(|| {
+                    unresolved_materials.push(materials.len());
+                    materials.push(Material { name: name.to_string(), ..Default::default() });
+                    materials.len() - 1
+                });
             }
             _ => {} // vn/vt are ignored: normals are always recomputed, as before.
         }
     }
 
-    // The old loader smoothed every vertex regardless of `s` lines. Keep that
-    // for files without any smoothing info, but respect groups when present
-    // so e.g. box walls stay flat.
+    // The old loader smoothed every vertex regardless of `s` lines. Files
+    // without smoothing info are still smoothed (up to a crease angle), but
+    // groups are respected when present so e.g. box walls stay flat.
     if !saw_smoothing {
         for p in &mut polygons {
             p.smoothing_group = 1;
@@ -145,23 +160,29 @@ pub fn load_obj(path: &Path) -> Result<Mesh> {
 
     let face_normals: Vec<DVec3> = polygons.iter().map(|p| newell_normal(&positions, &p.verts)).collect();
 
-    let mut vertex_normals: HashMap<(usize, u32), DVec3> = HashMap::new();
+    // Faces meeting at a corner are found by position rather than vertex
+    // index, since many exporters (e.g. the teapot) give every face its own
+    // copy of each vertex.
+    let mut corner_faces: HashMap<(PosKey, u32), Vec<DVec3>> = HashMap::new();
     for (poly, n) in polygons.iter().zip(&face_normals) {
         if poly.smoothing_group != 0 {
             for &v in &poly.verts {
-                *vertex_normals.entry((v, poly.smoothing_group)).or_default() += *n;
+                corner_faces.entry((pos_key(positions[v]), poly.smoothing_group)).or_default().push(*n);
             }
         }
     }
+    // Without explicit smoothing groups, keep edges sharper than this as
+    // creases so faceted models (cubes, etc.) stay faceted.
+    let min_cos = if saw_smoothing { -1.0 } else { AUTO_SMOOTH_ANGLE_DEG.to_radians().cos() };
 
     let mut triangles = Vec::new();
     for (poly, &face_n) in polygons.iter().zip(&face_normals) {
         let normal_of = |v: usize| {
             if poly.smoothing_group == 0 {
-                face_n
-            } else {
-                vertex_normals[&(v, poly.smoothing_group)].normalize_or(face_n)
+                return face_n;
             }
+            let faces = &corner_faces[&(pos_key(positions[v]), poly.smoothing_group)];
+            faces.iter().filter(|n| n.dot(face_n) >= min_cos).sum::<DVec3>().normalize_or(face_n)
         };
         // Fan triangulation. (The old code silently used only the first
         // three vertices of every polygon.)
@@ -171,7 +192,7 @@ pub fn load_obj(path: &Path) -> Result<Mesh> {
         }
     }
 
-    Ok(Mesh { positions, triangles, materials, is_sphere })
+    Ok(Mesh { positions, triangles, materials, is_sphere, unresolved_materials, warnings })
 }
 
 pub fn load_mtl(path: &PathBuf) -> Result<Vec<Material>> {
@@ -230,6 +251,29 @@ mod tests {
         let p = dir.join(name);
         fs::File::create(&p).unwrap().write_all(contents.as_bytes()).unwrap();
         p
+    }
+
+    #[test]
+    fn smooths_across_duplicated_vertices_but_keeps_creases() {
+        let dir = std::env::temp_dir().join(format!("raytrace-smooth-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Two faces with separate vertex copies, sharing the edge x = 0. The
+        // second is tilted `deg` degrees; no `s` lines, so auto-smoothing.
+        let load = |deg: f64| {
+            let (s, c) = deg.to_radians().sin_cos();
+            let obj = format!("v -1 0 0\nv 0 0 0\nv 0 0 -1\nv 0 0 0\nv {c} {s} 0\nv 0 0 -1\nf 1 2 3\nf 4 5 6\n");
+            load_obj(&write_tmp(&dir, &format!("fold{deg}.obj"), &obj)).unwrap()
+        };
+        let gentle = load(30.0);
+        let shared = gentle.triangles[0].normals[1];
+        assert!(shared.abs_diff_eq(gentle.triangles[1].normals[0], 1e-12), "normals should be blended");
+        // The bisector of the two face normals (0°, and 30° toward -X).
+        let (sin15, cos15) = 15f64.to_radians().sin_cos();
+        assert!(shared.abs_diff_eq(DVec3::new(-sin15, cos15, 0.0), 1e-12), "{shared}");
+
+        let sharp = load(90.0);
+        assert!(sharp.triangles[0].normals[1].abs_diff_eq(DVec3::Y, 1e-12), "crease should stay flat");
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

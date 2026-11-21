@@ -1,0 +1,10 @@
+# Unit sphere centered at the origin, rendered analytically (@sphere).
+# Give it a material with `material = "..."` in the scene.
+@sphere
+v  1 0 0
+v -1 0 0
+v 0  1 0
+v 0 -1 0
+v 0 0  1
+v 0 0 -1
+f 1 3 5

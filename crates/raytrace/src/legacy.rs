@@ -40,8 +40,8 @@ pub fn convert(xml: &str, mesh_dir: &Path) -> Result<SceneFile> {
         }
         let model = matrix(child(mesh, "modelMat")?)?;
         objects.push(ObjectDef {
-            mesh: mesh_dir.join(text(mesh, "objName")?),
             transform: (!model.abs_diff_eq(DMat4::IDENTITY, 1e-12)).then(|| mat_to_rows(&model)),
+            ..ObjectDef::new(mesh_dir.join(text(mesh, "objName")?))
         });
     }
 
@@ -59,7 +59,14 @@ pub fn convert(xml: &str, mesh_dir: &Path) -> Result<SceneFile> {
         });
     }
 
-    Ok(SceneFile { camera, lights, objects, render: RenderSettings::default(), photon: PhotonSettings::default() })
+    Ok(SceneFile {
+        camera,
+        lights,
+        objects,
+        materials: Vec::new(),
+        render: RenderSettings::default(),
+        photon: PhotonSettings::default(),
+    })
 }
 
 fn camera_def(cam: Node, view: DMat4) -> Result<CameraDef> {
