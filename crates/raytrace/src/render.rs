@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::Result;
-use glam::DVec3;
+use glam::{DMat4, DVec3};
 use rayon::prelude::*;
 
 use crate::geometry::{Hit, Ray, World};
@@ -21,18 +21,47 @@ pub struct Image {
 }
 
 impl Image {
-    /// Clamps to [0, 1] without gamma, as the original did when drawing
-    /// pixels with glColor3f.
+    /// 8-bit output with the original's mapping: clamp to [0, 1], no gamma.
     pub fn to_rgb8(&self) -> image::RgbImage {
+        self.to_rgb8_with(Display::default())
+    }
+
+    pub fn to_rgb8_with(&self, display: Display) -> image::RgbImage {
         image::RgbImage::from_fn(self.width, self.height, |x, y| {
-            let c = self.pixels[(y * self.width + x) as usize].clamp(DVec3::ZERO, DVec3::ONE) * 255.0;
-            image::Rgb([c.x.round() as u8, c.y.round() as u8, c.z.round() as u8])
+            image::Rgb(display.map(self.pixels[(y * self.width + x) as usize]))
         })
     }
 
     pub fn save_png(&self, path: &Path) -> Result<()> {
-        self.to_rgb8().save(path)?;
+        self.save_png_with(path, Display::default())
+    }
+
+    pub fn save_png_with(&self, path: &Path, display: Display) -> Result<()> {
+        self.to_rgb8_with(display).save(path)?;
         Ok(())
+    }
+}
+
+/// Maps linear radiance to 8-bit display values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Display {
+    /// Exposure in stops: values are scaled by 2^exposure.
+    pub exposure: f64,
+    /// 1.0 reproduces the original renderer's look; 2.2 approximates sRGB.
+    pub gamma: f64,
+}
+
+impl Default for Display {
+    fn default() -> Self {
+        Self { exposure: 0.0, gamma: 1.0 }
+    }
+}
+
+impl Display {
+    pub fn map(&self, c: DVec3) -> [u8; 3] {
+        let c = (c * self.exposure.exp2()).clamp(DVec3::ZERO, DVec3::ONE);
+        let c = if self.gamma == 1.0 { c } else { c.powf(1.0 / self.gamma) };
+        (c * 255.0).round().to_array().map(|v| v as u8)
     }
 }
 
@@ -40,6 +69,8 @@ pub struct Renderer<'a> {
     pub world: &'a World,
     pub settings: &'a RenderSettings,
     pub photons: Option<&'a PhotonMaps>,
+    /// World-to-camera matrix.
+    pub view: DMat4,
     pub window: Window,
     pub near: f64,
     pub far: f64,
@@ -48,7 +79,15 @@ pub struct Renderer<'a> {
 impl<'a> Renderer<'a> {
     pub fn new(scene: &'a Scene, world: &'a World, photons: Option<&'a PhotonMaps>) -> Self {
         let cam = &scene.file.camera;
-        Self { world, settings: &scene.file.render, photons, window: cam.window, near: cam.near, far: cam.far }
+        Self {
+            world,
+            settings: &scene.file.render,
+            photons,
+            view: scene.view,
+            window: cam.window,
+            near: cam.near,
+            far: cam.far,
+        }
     }
 
     /// Renders all rows in parallel. `progress(rows_done, rows_total)` is
@@ -78,6 +117,7 @@ impl<'a> Renderer<'a> {
             (self.window.top - self.window.bottom) / height as f64,
             0.0,
         );
+        let camera_to_world = self.view.inverse();
         let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
         pixels.par_chunks_mut(w).enumerate().for_each(|(row, out)| {
@@ -90,7 +130,7 @@ impl<'a> Renderer<'a> {
                 let mut rng = Rng::new(((y as u64) << 32) | x as u64);
                 let corner =
                     DVec3::new(self.window.left + x as f64 * px.x, self.window.bottom + y as f64 * px.y, -self.near);
-                *pixel = self.pixel(corner, px, &mut rng);
+                *pixel = self.pixel(corner, px, &camera_to_world, &mut rng);
             }
             on_row(row, out);
         });
@@ -98,10 +138,13 @@ impl<'a> Renderer<'a> {
         (!cancelled()).then_some(Image { width, height, pixels })
     }
 
-    fn pixel(&self, corner: DVec3, px: DVec3, rng: &mut Rng) -> DVec3 {
+    /// `corner` and `px` are in camera space.
+    fn pixel(&self, corner: DVec3, px: DVec3, camera_to_world: &DMat4, rng: &mut Rng) -> DVec3 {
+        let eye = camera_to_world.transform_point3(DVec3::ZERO);
+        let primary = |p: DVec3| Ray::new(eye, camera_to_world.transform_vector3(p));
         let n = self.settings.samples.max(1) as usize;
         if n == 1 {
-            return self.trace(&Ray::new(DVec3::ZERO, corner + px * 0.5), 0, false);
+            return self.trace(&primary(corner + px * 0.5), 0, false);
         }
         // N-rooks: one sample per row and per column of an n×n sub-grid.
         let mut cols: Vec<usize> = (0..n).collect();
@@ -112,7 +155,7 @@ impl<'a> Renderer<'a> {
         for (i, &j) in cols.iter().enumerate() {
             let offset =
                 DVec3::new((i as f64 + rng.next_f64()) / n as f64, (j as f64 + rng.next_f64()) / n as f64, 0.0);
-            sum += self.trace(&Ray::new(DVec3::ZERO, corner + px * offset), 0, false);
+            sum += self.trace(&primary(corner + px * offset), 0, false);
         }
         sum / n as f64
     }
@@ -215,10 +258,14 @@ impl<'a> Renderer<'a> {
 
     fn background(&self, ray: &Ray) -> DVec3 {
         let clear = DVec3::from(self.settings.background);
-        if !self.settings.checker_background || ray.dir.z >= 0.0 {
+        if !self.settings.checker_background {
             return clear;
         }
-        // Checkerboard on the far plane.
+        // Checkerboard on the camera's far plane.
+        let ray = Ray { origin: self.view.transform_point3(ray.origin), dir: self.view.transform_vector3(ray.dir) };
+        if ray.dir.z >= 0.0 {
+            return clear;
+        }
         const CHECKER_SIZE: f64 = 125.0;
         let t = (-self.far - ray.origin.z) / ray.dir.z;
         let p = ray.at(t);

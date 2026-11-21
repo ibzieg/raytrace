@@ -38,6 +38,11 @@ impl KdTree {
         self.photons.is_empty()
     }
 
+    /// All photons, in kd-tree order.
+    pub fn photons(&self) -> &[Photon] {
+        &self.photons
+    }
+
     /// Calls `f(photon, squared_distance)` for every photon within `radius`
     /// of `point`.
     pub fn for_each_within(&self, point: DVec3, radius: f64, mut f: impl FnMut(&Photon, f64)) {

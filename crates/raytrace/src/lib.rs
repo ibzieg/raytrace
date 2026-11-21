@@ -15,5 +15,5 @@ pub mod scene;
 
 pub use geometry::World;
 pub use photon::PhotonMaps;
-pub use render::{Image, Renderer};
+pub use render::{Display, Image, Renderer};
 pub use scene::{Scene, SceneFile};

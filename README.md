@@ -40,8 +40,20 @@ cargo run --release -p raytrace-viewer -- assets/scenes/box_test_4.toml
 
 An egui app with every render and photon setting. It re-renders on each change,
 first as a quick low-res preview and then at full resolution, filling in
-row by row. Photon maps are reused until a photon setting changes. You can
-save the PNG, or write the tweaked settings back to the scene file.
+row by row. Photon maps are reused until a photon setting changes, including
+while the camera moves.
+
+- **Camera:** drag to orbit, right-drag or shift-drag to pan, scroll to zoom.
+  It shows previews while you move and does a full render once you stop.
+- **Photon overlay:** draws the stored photons over the image (direct,
+  indirect and caustic, each in its own color, with occluded ones hidden).
+  Useful for tuning the gather radii.
+- **Display:** exposure (EV) and gamma, applied at display time, so changing
+  them doesn't re-render. Gamma 1.0 matches the original look.
+- **Saving:** "Save PNG…" applies the display settings. "Save scene…" writes the
+  current settings and camera back to TOML.
+
+The CLI has the same display controls: `--exposure 0.5 --gamma 2.2`.
 
 Run `raytrace render --help` for all flags. Everything else (radii, exposure,
 depth, background…) is set in the scene file.

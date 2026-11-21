@@ -1,6 +1,6 @@
-//! Render-ready geometry. As in the original renderer, everything is
-//! transformed into camera space up front, so the eye sits at the origin
-//! looking down -Z.
+//! Render-ready geometry in world space, so the camera can move without
+//! rebuilding the BVH or photon maps. (The original renderer transformed
+//! everything into camera space instead.)
 
 use glam::{DMat3, DVec3};
 
@@ -107,7 +107,6 @@ impl Sphere {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PointLight {
-    /// Camera space.
     pub position: DVec3,
     pub diffuse: DVec3,
     pub specular: DVec3,
@@ -122,29 +121,34 @@ pub struct World {
 }
 
 impl World {
+    /// A world with nothing in it.
+    pub fn empty() -> Self {
+        Self { triangles: vec![], spheres: vec![], materials: vec![], lights: vec![], bvh: vec![] }
+    }
+
     pub fn from_scene(scene: &Scene) -> Self {
         let mut triangles = Vec::new();
         let mut spheres = Vec::new();
         let mut materials = Vec::new();
 
         for (mesh, model) in &scene.objects {
-            let model_view = scene.view * *model;
-            let normal_mat = DMat3::from_mat4(model_view).inverse().transpose();
+            let model = *model;
+            let normal_mat = DMat3::from_mat4(model).inverse().transpose();
             let mat_base = materials.len() as u32;
             materials.extend(mesh.materials.iter().cloned());
 
             if mesh.is_sphere {
-                let m3 = DMat3::from_mat4(model_view);
+                let m3 = DMat3::from_mat4(model);
                 let scale = m3.x_axis.length().max(m3.y_axis.length()).max(m3.z_axis.length());
                 spheres.push(Sphere {
-                    center: model_view.transform_point3(mesh.center()),
+                    center: model.transform_point3(mesh.center()),
                     radius: mesh.bounding_radius() * scale,
                     material: mat_base + mesh.primary_material() as u32,
                 });
                 continue;
             }
 
-            let positions: Vec<DVec3> = mesh.positions.iter().map(|&p| model_view.transform_point3(p)).collect();
+            let positions: Vec<DVec3> = mesh.positions.iter().map(|&p| model.transform_point3(p)).collect();
             for t in &mesh.triangles {
                 let [a, b, c] = t.verts.map(|i| positions[i]);
                 triangles.push(Triangle {
@@ -161,11 +165,7 @@ impl World {
             .file
             .lights
             .iter()
-            .map(|l| PointLight {
-                position: scene.view.transform_point3(l.position.into()),
-                diffuse: l.diffuse.into(),
-                specular: l.specular.into(),
-            })
+            .map(|l| PointLight { position: l.position.into(), diffuse: l.diffuse.into(), specular: l.specular.into() })
             .collect();
 
         let bvh = build_bvh(&mut triangles);

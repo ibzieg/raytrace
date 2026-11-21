@@ -1,18 +1,27 @@
-//! Interactive viewer: edit render / photon settings and watch the image
-//! re-render progressively.
+//! Interactive viewer: edit render / photon settings, orbit the camera, and
+//! watch the image re-render progressively.
 
+mod camera;
 mod job;
+mod overlay;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use eframe::egui::{self, Color32, ColorImage, DragValue, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, DragValue, PointerButton, TextureHandle, TextureOptions};
+use glam::DMat4;
 use raytrace::scene::{PhotonSettings, RenderSettings};
-use raytrace::{PhotonMaps, Scene, World};
+use raytrace::{Display, PhotonMaps, Scene, World};
 
+use camera::OrbitCamera;
 use job::{Job, JobInput, Stage};
+use overlay::{OverlayOptions, OverlayPoint};
+
+/// After the last camera movement, wait this long before the full render.
+const SETTLE_TIME: Duration = Duration::from_millis(150);
 
 const DEFAULT_SCENE: &str = "assets/scenes/box_scene.toml";
 
@@ -32,6 +41,8 @@ struct LoadedScene {
     path: PathBuf,
     scene: Arc<Scene>,
     world: Arc<World>,
+    /// The scene camera as an orbit camera, where navigation starts from.
+    initial_orbit: OrbitCamera,
 }
 
 struct Viewer {
@@ -45,6 +56,18 @@ struct Viewer {
     auto_render: bool,
     needs_render: bool,
     message: Option<String>,
+    /// Set once the user moves the camera; None means the scene's own view.
+    camera: Option<OrbitCamera>,
+    /// When the camera last moved, while a navigation gesture is in progress.
+    last_camera_move: Option<Instant>,
+    display: Display,
+    /// Re-upload the texture (display settings changed).
+    display_dirty: bool,
+    show_photons: bool,
+    overlay_opts: OverlayOptions,
+    overlay: Vec<OverlayPoint>,
+    /// What `overlay` was computed for: (maps pointer, view, options).
+    overlay_key: Option<(usize, DMat4, OverlayOptions)>,
 }
 
 impl Viewer {
@@ -59,6 +82,14 @@ impl Viewer {
             auto_render: true,
             needs_render: false,
             message: None,
+            camera: None,
+            last_camera_move: None,
+            display: Display::default(),
+            display_dirty: false,
+            show_photons: false,
+            overlay_opts: OverlayOptions::default(),
+            overlay: Vec::new(),
+            overlay_key: None,
         };
         if let Some(p) = path {
             v.open(&p);
@@ -73,6 +104,8 @@ impl Viewer {
                 self.photon = loaded.scene.file.photon.clone();
                 self.loaded = Some(loaded);
                 self.maps = None;
+                self.camera = None;
+                self.overlay_key = None;
                 self.needs_render = true;
                 self.message = None;
             }
@@ -80,8 +113,14 @@ impl Viewer {
         }
     }
 
-    fn start_render(&mut self, ctx: &egui::Context) {
+    fn view(&self) -> Option<DMat4> {
+        let loaded = self.loaded.as_ref()?;
+        Some(self.camera.map_or(loaded.scene.view, |c| c.view()))
+    }
+
+    fn start_render(&mut self, ctx: &egui::Context, preview_only: bool) {
         self.cancel();
+        let Some(view) = self.view() else { return };
         let Some(loaded) = &self.loaded else { return };
         let cached_maps = match &self.maps {
             Some((settings, maps)) if *settings == self.photon => Some(maps.clone()),
@@ -93,6 +132,8 @@ impl Viewer {
                 world: loaded.world.clone(),
                 render: self.render.clone(),
                 photon: self.photon.clone(),
+                view,
+                preview_only,
                 cached_maps,
             },
             ctx.clone(),
@@ -109,8 +150,16 @@ impl Viewer {
     /// Uploads new pixels and collects photon maps from the current job.
     fn poll_job(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.job else { return };
-        if job.updated.swap(false, Ordering::Relaxed) {
-            let image = ColorImage::new([job.width as usize, job.height as usize], job.pixels.lock().unwrap().clone());
+        if job.updated.swap(false, Ordering::Relaxed) | std::mem::take(&mut self.display_dirty) {
+            let pixels = job
+                .pixels
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|&c| self.display.map(c))
+                .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+                .collect();
+            let image = ColorImage::new([job.width as usize, job.height as usize], pixels);
             match &mut self.texture {
                 Some(t) if t.size() == image.size => t.set(image, TextureOptions::LINEAR),
                 _ => self.texture = Some(ctx.load_texture("render", image, TextureOptions::LINEAR)),
@@ -132,7 +181,7 @@ impl Viewer {
         else {
             return;
         };
-        self.message = Some(match image.save_png(&path) {
+        self.message = Some(match image.save_png_with(&path, self.display) {
             Ok(()) => format!("Saved {}", path.display()),
             Err(e) => format!("Save failed: {e:#}"),
         });
@@ -149,6 +198,9 @@ impl Viewer {
         let mut file = loaded.scene.file.clone();
         file.render = self.render.clone();
         file.photon = self.photon.clone();
+        if let Some(camera) = &self.camera {
+            camera.write_to(&mut file.camera);
+        }
         // Mesh paths are relative to the scene file; only valid if it stays
         // in the same directory.
         let same_dir = path.parent() == loaded.path.parent();
@@ -260,18 +312,59 @@ impl Viewer {
                     maps.caustic.len()
                 ));
             }
+            ui.add_enabled_ui(self.maps.is_some(), |ui| {
+                ui.checkbox(&mut self.show_photons, "Show photons");
+                ui.add_enabled_ui(self.show_photons, |ui| {
+                    let o = &mut self.overlay_opts;
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut o.direct, egui::RichText::new("Direct").color(overlay::DIRECT_COLOR));
+                        ui.checkbox(&mut o.indirect, egui::RichText::new("Indirect").color(overlay::INDIRECT_COLOR));
+                        ui.checkbox(&mut o.caustic, egui::RichText::new("Caustic").color(overlay::CAUSTIC_COLOR));
+                    });
+                    ui.checkbox(&mut o.hide_occluded, "Hide occluded");
+                });
+            });
         });
         if (self.render.clone(), self.photon.clone()) != before {
             self.needs_render = true;
         }
+
+        egui::CollapsingHeader::new("Display").default_open(true).show(ui, |ui| {
+            let before = self.display;
+            let d = &mut self.display;
+            egui::Grid::new("display").num_columns(2).show(ui, |ui| {
+                ui.label("Exposure");
+                ui.add(egui::Slider::new(&mut d.exposure, -6.0..=6.0).suffix(" EV"));
+                ui.end_row();
+                ui.label("Gamma");
+                ui.add(egui::Slider::new(&mut d.gamma, 1.0..=3.0));
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Original (γ 1.0)").clicked() {
+                    *d = Display::default();
+                }
+                if ui.button("sRGB-ish (γ 2.2)").clicked() {
+                    *d = Display { gamma: 2.2, ..*d };
+                }
+            });
+            self.display_dirty |= self.display != before;
+        });
+
+        egui::CollapsingHeader::new("Camera").default_open(true).show(ui, |ui| {
+            ui.weak("Drag: orbit · Right-drag or Shift-drag: pan · Scroll: zoom");
+            if ui.add_enabled(self.camera.is_some(), egui::Button::new("Reset to scene camera")).clicked() {
+                self.camera = None;
+                self.needs_render = true;
+            }
+        });
 
         ui.separator();
         ui.checkbox(&mut self.auto_render, "Re-render on change");
         let running = self.job.as_ref().is_some_and(|j| j.is_running());
         ui.horizontal(|ui| {
             if ui.add_enabled(self.loaded.is_some(), egui::Button::new("Render")).clicked() {
-                self.needs_render = true;
-                self.start_render(ui.ctx());
+                self.start_render(ui.ctx(), false);
             }
             if ui.add_enabled(running, egui::Button::new("Cancel")).clicked() {
                 self.cancel();
@@ -297,6 +390,7 @@ impl Viewer {
                     Some(p) => format!("Done: photons {p:.2?}, render {render:.2?}"),
                     None => format!("Done in {render:.2?}"),
                 },
+                Stage::Previewed => "Preview".to_string(),
                 Stage::Cancelled => "Cancelled".to_string(),
             };
             ui.add(egui::ProgressBar::new(job.progress()).text(status));
@@ -316,8 +410,8 @@ impl eframe::App for Viewer {
             egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui));
         });
 
-        if self.needs_render && self.auto_render {
-            self.start_render(&ctx);
+        if self.needs_render && self.auto_render && self.last_camera_move.is_none() {
+            self.start_render(&ctx, false);
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -337,12 +431,82 @@ impl eframe::App for Viewer {
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
+
+            let response = ui.allocate_rect(avail, egui::Sense::click_and_drag());
+            self.navigate(ui, &response, rect);
+            if self.show_photons {
+                self.draw_overlay(ui, rect);
+            }
         });
+    }
+}
+
+impl Viewer {
+    /// Mouse camera controls. Renders previews while moving and a full image
+    /// once the camera settles.
+    fn navigate(&mut self, ui: &egui::Ui, response: &egui::Response, image_rect: egui::Rect) {
+        let Some(loaded) = &self.loaded else { return };
+        let cam_def = &loaded.scene.file.camera;
+        let mut camera = self.camera.unwrap_or(loaded.initial_orbit);
+        let before = camera;
+
+        let delta = response.drag_delta();
+        if response.dragged() && delta != egui::Vec2::ZERO {
+            let pan = response.dragged_by(PointerButton::Secondary)
+                || response.dragged_by(PointerButton::Middle)
+                || ui.input(|i| i.modifiers.shift);
+            if pan {
+                let k = camera.world_per_point(&cam_def.window, cam_def.near, image_rect.height() as f64);
+                camera.pan(delta.x as f64, delta.y as f64, k);
+            } else {
+                camera.orbit(delta.x as f64, delta.y as f64);
+            }
+        }
+        if response.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                camera.zoom(scroll as f64);
+            }
+        }
+
+        // Until the user moves it, `camera` stays None so renders use the
+        // scene's exact view matrix.
+        let moved = camera != before;
+        if moved {
+            self.camera = Some(camera);
+            self.last_camera_move = Some(Instant::now());
+            self.start_render(ui.ctx(), true);
+        } else if let Some(t) = self.last_camera_move {
+            if !response.dragged() && t.elapsed() >= SETTLE_TIME {
+                self.last_camera_move = None;
+                self.start_render(ui.ctx(), false);
+            } else {
+                ui.ctx().request_repaint_after(SETTLE_TIME);
+            }
+        }
+    }
+
+    fn draw_overlay(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        let (Some((_, maps)), Some(view), Some(loaded)) = (&self.maps, self.view(), &self.loaded) else { return };
+        let key = (Arc::as_ptr(maps) as usize, view, self.overlay_opts);
+        if self.overlay_key != Some(key) {
+            let cam = &loaded.scene.file.camera;
+            self.overlay = overlay::project(maps, &loaded.world, view, &cam.window, cam.near, self.overlay_opts);
+            self.overlay_key = Some(key);
+        }
+        let mut mesh = egui::Mesh::default();
+        let half = egui::vec2(1.0, 1.0);
+        for p in &self.overlay {
+            let center = rect.min + p.uv.to_vec2() * rect.size();
+            mesh.add_colored_rect(egui::Rect::from_center_size(center, half * 2.0), p.color);
+        }
+        ui.painter().add(egui::Shape::mesh(mesh));
     }
 }
 
 fn load(path: &Path) -> Result<LoadedScene> {
     let scene = Scene::load(path).with_context(|| format!("loading {}", path.display()))?;
     let world = World::from_scene(&scene);
-    Ok(LoadedScene { path: path.to_path_buf(), scene: Arc::new(scene), world: Arc::new(world) })
+    let initial_orbit = OrbitCamera::from_view(&scene.file.camera, scene.view, &world);
+    Ok(LoadedScene { path: path.to_path_buf(), scene: Arc::new(scene), world: Arc::new(world), initial_orbit })
 }

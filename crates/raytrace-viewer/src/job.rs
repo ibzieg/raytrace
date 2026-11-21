@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32};
-use glam::DVec3;
+use eframe::egui;
+use glam::{DMat4, DVec3};
 use raytrace::scene::{PhotonSettings, RenderSettings};
 use raytrace::{Image, PhotonMaps, Renderer, Scene, World};
 
@@ -18,7 +18,12 @@ pub enum Stage {
     Photons,
     Preview,
     Rendering,
-    Done { photons: Option<Duration>, render: Duration },
+    Done {
+        photons: Option<Duration>,
+        render: Duration,
+    },
+    /// A preview-only job (e.g. while dragging the camera) finished.
+    Previewed,
     Cancelled,
 }
 
@@ -26,8 +31,8 @@ pub struct Job {
     pub width: u32,
     pub height: u32,
     pub cancel: AtomicBool,
-    /// Display pixels, rows top-down.
-    pub pixels: Mutex<Vec<Color32>>,
+    /// Linear radiance, rows top-down. Tone mapped by the UI.
+    pub pixels: Mutex<Vec<DVec3>>,
     /// Set whenever `pixels` changes; the UI clears it after uploading.
     pub updated: AtomicBool,
     pub rows_done: AtomicUsize,
@@ -43,6 +48,10 @@ pub struct JobInput {
     pub world: Arc<World>,
     pub render: RenderSettings,
     pub photon: PhotonSettings,
+    /// World-to-camera matrix.
+    pub view: DMat4,
+    /// Stop after the low-res preview pass.
+    pub preview_only: bool,
     /// Reused when the photon settings haven't changed since they were built.
     pub cached_maps: Option<Arc<PhotonMaps>>,
 }
@@ -55,7 +64,7 @@ impl Job {
             width,
             height,
             cancel: AtomicBool::new(false),
-            pixels: Mutex::new(vec![Color32::BLACK; (width * height) as usize]),
+            pixels: Mutex::new(vec![DVec3::ZERO; (width * height) as usize]),
             updated: AtomicBool::new(true),
             rows_done: AtomicUsize::new(0),
             stage: Mutex::new(Stage::Rendering),
@@ -115,13 +124,14 @@ impl Job {
             world: &input.world,
             settings: &input.render,
             photons: maps.as_deref(),
+            view: input.view,
             window: cam.window,
             near: cam.near,
             far: cam.far,
         };
         let t = Instant::now();
 
-        if (self.width * self.height) as usize >= PREVIEW_MIN_PIXELS {
+        if input.preview_only || (self.width * self.height) as usize >= PREVIEW_MIN_PIXELS {
             self.set_stage(Stage::Preview, &ctx);
             renderer.settings = &preview_settings;
             let (pw, ph) = (self.width / PREVIEW_DOWNSCALE, self.height / PREVIEW_DOWNSCALE);
@@ -130,15 +140,17 @@ impl Job {
                 ctx.request_repaint();
             }
             renderer.settings = &input.render;
+            if input.preview_only {
+                let stage = if self.cancelled() { Stage::Cancelled } else { Stage::Previewed };
+                return self.set_stage(stage, &ctx);
+            }
         }
 
         self.set_stage(Stage::Rendering, &ctx);
         let w = self.width as usize;
         let image = renderer.render_with(self.width, self.height, Some(&self.cancel), &|row, pixels| {
             let mut out = self.pixels.lock().unwrap();
-            for (dst, src) in out[row * w..(row + 1) * w].iter_mut().zip(pixels) {
-                *dst = to_color32(*src);
-            }
+            out[row * w..(row + 1) * w].copy_from_slice(pixels);
             drop(out);
             self.rows_done.fetch_add(1, Ordering::Relaxed);
             self.updated.store(true, Ordering::Relaxed);
@@ -161,15 +173,9 @@ impl Job {
             let sy = (y * preview.height / self.height).min(preview.height - 1);
             for x in 0..self.width {
                 let sx = (x * preview.width / self.width).min(preview.width - 1);
-                out[(y * self.width + x) as usize] = to_color32(preview.pixels[(sy * preview.width + sx) as usize]);
+                out[(y * self.width + x) as usize] = preview.pixels[(sy * preview.width + sx) as usize];
             }
         }
         self.updated.store(true, Ordering::Relaxed);
     }
-}
-
-/// Same mapping as the PNG writer: clamp, no gamma.
-fn to_color32(c: DVec3) -> Color32 {
-    let c = c.clamp(DVec3::ZERO, DVec3::ONE) * 255.0;
-    Color32::from_rgb(c.x.round() as u8, c.y.round() as u8, c.z.round() as u8)
 }

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use raytrace::{PhotonMaps, Renderer, Scene, World, legacy};
+use raytrace::{Display, PhotonMaps, Renderer, Scene, World, legacy};
 
 #[derive(Parser)]
 #[command(version, about = "Photon mapping ray tracer")]
@@ -37,6 +37,12 @@ enum Command {
         photon_count: Option<u32>,
         #[arg(long)]
         soft_shadows: bool,
+        /// Exposure in stops (2^EV scale) applied when writing the PNG.
+        #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+        exposure: f64,
+        /// Display gamma; 1.0 matches the original renderer, 2.2 ≈ sRGB.
+        #[arg(long, default_value_t = 1.0)]
+        gamma: f64,
         /// Seed for photon emission.
         #[arg(long, default_value_t = 1)]
         seed: u64,
@@ -55,7 +61,19 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Render { scene, output, height, width, samples, photons, photon_count, soft_shadows, seed } => {
+        Command::Render {
+            scene,
+            output,
+            height,
+            width,
+            samples,
+            photons,
+            photon_count,
+            soft_shadows,
+            exposure,
+            gamma,
+            seed,
+        } => {
             let t0 = Instant::now();
             let mut scene = Scene::load(&scene)?;
             let r = &mut scene.file.render;
@@ -108,7 +126,7 @@ fn main() -> Result<()> {
                 }
             });
             eprintln!(" in {:.2?}", t.elapsed());
-            image.save_png(&output)?;
+            image.save_png_with(&output, Display { exposure, gamma })?;
             eprintln!("wrote {}", output.display());
         }
         Command::Convert { input, output, mesh_dir } => {

@@ -8,6 +8,7 @@ license.workspace = true
 anyhow = "1.0.104"
 eframe = "0.37.0"
 glam = "0.34.3"
+rayon = "1.12.0"
 raytrace = { version = "0.1.0", path = "../raytrace" }
 rfd = "0.18.0"
 toml = "1.2.1"
