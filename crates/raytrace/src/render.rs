@@ -1,0 +1,209 @@
+//! Whitted-style ray tracing with optional photon-map shading.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use anyhow::Result;
+use glam::DVec3;
+use rayon::prelude::*;
+
+use crate::geometry::{Hit, Ray, World};
+use crate::optics::{reflect, refract};
+use crate::photon::PhotonMaps;
+use crate::rng::Rng;
+use crate::scene::{RenderSettings, Scene, Window};
+
+/// Linear RGB, rows stored top to bottom.
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<DVec3>,
+}
+
+impl Image {
+    /// Clamps to [0, 1] without gamma, as the original did when drawing
+    /// pixels with glColor3f.
+    pub fn to_rgb8(&self) -> image::RgbImage {
+        image::RgbImage::from_fn(self.width, self.height, |x, y| {
+            let c = self.pixels[(y * self.width + x) as usize].clamp(DVec3::ZERO, DVec3::ONE) * 255.0;
+            image::Rgb([c.x.round() as u8, c.y.round() as u8, c.z.round() as u8])
+        })
+    }
+
+    pub fn save_png(&self, path: &Path) -> Result<()> {
+        self.to_rgb8().save(path)?;
+        Ok(())
+    }
+}
+
+pub struct Renderer<'a> {
+    pub world: &'a World,
+    pub settings: &'a RenderSettings,
+    pub photons: Option<&'a PhotonMaps>,
+    pub window: Window,
+    pub near: f64,
+    pub far: f64,
+}
+
+impl<'a> Renderer<'a> {
+    pub fn new(scene: &'a Scene, world: &'a World, photons: Option<&'a PhotonMaps>) -> Self {
+        let cam = &scene.file.camera;
+        Self { world, settings: &scene.file.render, photons, window: cam.window, near: cam.near, far: cam.far }
+    }
+
+    /// Renders all rows in parallel. `progress(rows_done, rows_total)` is
+    /// called from worker threads as rows finish.
+    pub fn render(&self, width: u32, height: u32, progress: &(dyn Fn(usize, usize) + Sync)) -> Image {
+        let w = width as usize;
+        let mut pixels = vec![DVec3::ZERO; w * height as usize];
+        let done = AtomicUsize::new(0);
+        let px = DVec3::new(
+            (self.window.right - self.window.left) / width as f64,
+            (self.window.top - self.window.bottom) / height as f64,
+            0.0,
+        );
+
+        pixels.par_chunks_mut(w).enumerate().for_each(|(row, out)| {
+            // Image rows run top-down; camera y runs bottom-up.
+            let y = height as usize - 1 - row;
+            for (x, pixel) in out.iter_mut().enumerate() {
+                let mut rng = Rng::new(((y as u64) << 32) | x as u64);
+                let corner =
+                    DVec3::new(self.window.left + x as f64 * px.x, self.window.bottom + y as f64 * px.y, -self.near);
+                *pixel = self.pixel(corner, px, &mut rng);
+            }
+            progress(done.fetch_add(1, Ordering::Relaxed) + 1, height as usize);
+        });
+
+        Image { width, height, pixels }
+    }
+
+    fn pixel(&self, corner: DVec3, px: DVec3, rng: &mut Rng) -> DVec3 {
+        let n = self.settings.samples.max(1) as usize;
+        if n == 1 {
+            return self.trace(&Ray::new(DVec3::ZERO, corner + px * 0.5), 0, false);
+        }
+        // N-rooks: one sample per row and per column of an n×n sub-grid.
+        let mut cols: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            cols.swap(i, rng.below(i + 1));
+        }
+        let mut sum = DVec3::ZERO;
+        for (i, &j) in cols.iter().enumerate() {
+            let offset =
+                DVec3::new((i as f64 + rng.next_f64()) / n as f64, (j as f64 + rng.next_f64()) / n as f64, 0.0);
+            sum += self.trace(&Ray::new(DVec3::ZERO, corner + px * offset), 0, false);
+        }
+        sum / n as f64
+    }
+
+    /// Color seen along `ray`; the background when nothing is hit.
+    pub fn trace(&self, ray: &Ray, depth: u32, internal: bool) -> DVec3 {
+        let Some(hit) = self.world.intersect(ray, f64::INFINITY) else {
+            return self.background(ray);
+        };
+        let s = self.settings;
+        let m = &self.world.materials[hit.material];
+
+        let (base, specular) = match self.photons {
+            Some(maps) => (maps.irradiance(&hit, m.kd), DVec3::ZERO),
+            None => self.shade(ray, &hit),
+        };
+
+        let mut reflect_color = DVec3::ZERO;
+        let mut reflect_factor = 0.0;
+        // No reflections from inside an object, as in the original.
+        if s.reflections && !internal && depth < s.max_depth && m.reflectivity > 0.0 {
+            reflect_color = self.trace(&reflect(ray, &hit), depth + 1, false);
+            reflect_factor = m.reflectivity;
+        }
+
+        let mut refract_color = DVec3::ZERO;
+        let mut refract_factor = 0.0;
+        if s.refractions && depth < s.max_depth && m.transmissivity > 0.0 {
+            let (refracted, now_internal) = refract(ray, &hit, internal, m.effective_ior());
+            refract_color = self.trace(&refracted, depth + 1, now_internal);
+            refract_factor = m.transmissivity;
+        }
+
+        // Specular highlights go on top, unscaled.
+        base * (1.0 - reflect_factor - refract_factor)
+            + refract_color * refract_factor
+            + reflect_color * reflect_factor
+            + specular
+    }
+
+    /// Phong shading. Returns (ambient + diffuse, specular).
+    fn shade(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
+        let m = &self.world.materials[hit.material];
+        let n = hit.normal;
+        let v = -ray.dir;
+        let mut diffuse = DVec3::ZERO;
+        let mut specular = DVec3::ZERO;
+
+        for light in &self.world.lights {
+            let to_light = light.position - hit.point;
+            let dist = to_light.length();
+            let l = to_light / dist;
+
+            let visibility = if !self.settings.shadows || !self.occluded(hit.point, l, dist) {
+                1.0
+            } else if self.settings.soft_shadows {
+                self.penumbra(hit, light.position)
+            } else {
+                continue;
+            };
+
+            let ln = l.dot(n).max(0.0);
+            let r = crate::optics::reflect_dir(-l, n);
+            let rv = if m.shininess > 0.0 { r.dot(v).max(0.0).powf(m.shininess) } else { 0.0 };
+            diffuse += m.kd * light.diffuse * ln * visibility;
+            specular += m.ks * light.specular * rv * visibility;
+        }
+        // Ambient is the material's Ka alone; light ambient terms were unused.
+        (m.ka + diffuse, specular)
+    }
+
+    fn occluded(&self, from: DVec3, dir: DVec3, dist: f64) -> bool {
+        self.world.intersect(&Ray { origin: from, dir }, dist).is_some()
+    }
+
+    /// Fraction of the light visible from a disc of sample points around the
+    /// hit point in its tangent plane. Only called when the center is in
+    /// shadow, so it softens the inside edge of shadows.
+    fn penumbra(&self, hit: &Hit, light: DVec3) -> f64 {
+        let dim = self.settings.shadow_rays.max(1);
+        let spread = self.settings.shadow_jitter;
+        let (t, b) = hit.normal.any_orthonormal_pair();
+        let mut visible = 0;
+        for i in 0..dim {
+            for j in 0..dim {
+                // The original used j/dim radians (under 60°), likely meant to
+                // be a full turn.
+                let angle = std::f64::consts::TAU * j as f64 / dim as f64;
+                let radius = spread * i as f64;
+                let p = hit.point + t * (radius * angle.sin()) + b * (radius * angle.cos());
+                let to_light = light - p;
+                let dist = to_light.length();
+                if !self.occluded(p, to_light / dist, dist) {
+                    visible += 1;
+                }
+            }
+        }
+        visible as f64 / (dim * dim) as f64
+    }
+
+    fn background(&self, ray: &Ray) -> DVec3 {
+        let clear = DVec3::from(self.settings.background);
+        if !self.settings.checker_background || ray.dir.z >= 0.0 {
+            return clear;
+        }
+        // Checkerboard on the far plane.
+        const CHECKER_SIZE: f64 = 125.0;
+        let t = (-self.far - ray.origin.z) / ray.dir.z;
+        let p = ray.at(t);
+        let cx = (p.x.abs() / CHECKER_SIZE + 0.5) as i64;
+        let cy = (p.y.abs() / CHECKER_SIZE + 0.5) as i64;
+        if cx % 2 == cy % 2 { clear } else { DVec3::ONE - clear }
+    }
+}

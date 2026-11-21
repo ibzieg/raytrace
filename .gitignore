@@ -1,0 +1,5 @@
+/target
+/renders
+*.png
+!docs/images/*.png
+.DS_Store

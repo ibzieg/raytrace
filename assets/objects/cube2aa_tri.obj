@@ -1,0 +1,64 @@
+#PMesh data structure needs modification to remember group name
+mtllib cube2a.mtl
+v -1.0 1.0 1.0
+v -1.0 -1.0 1.0
+v 1.0 -1.0 1.0
+v 1.0 1.0 1.0
+v -1.0 1.0 -1.0
+v -1.0 -1.0 -1.0
+v 1.0 -1.0 -1.0
+v 1.0 1.0 -1.0
+v -1.0 1.0 1.0
+v 1.0 -1.0 1.0
+v 1.0 1.0 -1.0
+v -1.0 -1.0 -1.0
+v 1.0 1.0 1.0
+v 1.0 -1.0 1.0
+v 1.0 -1.0 -1.0
+v 1.0 1.0 1.0
+v 1.0 -1.0 -1.0
+v 1.0 1.0 -1.0
+v -1.0 1.0 -1.0
+v -1.0 1.0 1.0
+v 1.0 1.0 1.0
+v -1.0 1.0 -1.0
+v 1.0 1.0 1.0
+v 1.0 1.0 -1.0
+v -1.0 1.0 -1.0
+v -1.0 -1.0 -1.0
+v -1.0 -1.0 1.0
+v -1.0 1.0 -1.0
+v -1.0 -1.0 1.0
+v -1.0 1.0 1.0
+v -1.0 -1.0 1.0
+v -1.0 -1.0 -1.0
+v 1.0 -1.0 -1.0
+v -1.0 -1.0 1.0
+v 1.0 -1.0 -1.0
+v 1.0 -1.0 1.0
+# 36 vertices
+
+g surface0
+usemtl orange
+f 1 2 3 
+f 9 10 4 
+g surface1
+usemtl bluegrey
+f 8 7 6 
+f 11 12 5 
+g surface2
+usemtl orange
+f 13 14 15 
+f 16 17 18 
+g surface3
+usemtl shblack
+f 19 20 21 
+f 22 23 24 
+g surface4
+usemtl orange
+f 25 26 27 
+f 28 29 30 
+g surface5
+usemtl shaqua
+f 31 32 33 
+f 34 35 36 

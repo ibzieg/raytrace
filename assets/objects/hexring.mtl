@@ -1,0 +1,15 @@
+# Blender3D MTL File: 
+# Material Count: 0
+
+newmtl hexringMtl
+
+Ka 0.0 0.0 0.0
+Kd 0.9  0.8  0.3
+Ks 0.92 0.82 0.32
+
+Ns 123.0
+Ni   0.0
+
+Ir 0.690
+It 0.000
+

@@ -1,0 +1,21 @@
+# Ian made this
+# Recreated 2026: original file was missing; same geometry as chromeSphere.obj
+
+mtllib glassSphere.mtl
+
+# A perfect sphere
+@sphere
+
+# with diameter 4 hopefully
+v 0.0 0.0 0.0
+v 3.0 0.0 0.0
+v 0.0 3.0 0.0
+
+
+vn 0.0 0.0 1.0
+
+s 0 
+g sphere0
+usemtl glass
+
+f 1//1 2//1 3//1

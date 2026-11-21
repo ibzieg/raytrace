@@ -1,0 +1,57 @@
+# Converted from legacy scene 'reflect_ring.scene'.
+
+[camera]
+eye = [0.0, 0.0, 10.0]
+target = [0.0, 0.0, 0.0]
+up = [0.0, 1.0, 0.0]
+near = 9.0
+far = 1000.0
+
+[camera.window]
+left = -4.649923896499239
+right = 4.649923896499239
+bottom = -5.0
+top = 5.0
+
+[[light]]
+position = [-0.25, 1.0, 0.0]
+diffuse = [0.5, 0.5, 0.5]
+specular = [1.0, 1.0, 1.0]
+
+[[object]]
+mesh = "../objects/CheckerPlane_3x3_1200.obj"
+transform = [[0.708719789981842, 0.7038323879241943, -0.04840020462870598, -0.03125036507844925], [-0.29433876276016235, 0.35733750462532043, 0.886385440826416, 0.09374988824129105], [0.6411603093147278, -0.6139522194862366, 0.46041616797447205, -10.5], [0.0, 0.0, 0.0, 1.0]]
+
+[[object]]
+mesh = "../objects/reflect_ring.obj"
+transform = [[-0.9987075924873352, 0.03988109529018402, 0.03155292943120003, 1.1195604801177979], [-0.050115857273340225, -0.8771782517433167, -0.4775494933128357, -1.3368260860443115], [0.008632145822048187, -0.4785134792327881, 0.8780415058135986, -4.998506546020508], [0.0, 0.0, 0.0, 1.0]]
+
+[render]
+width = 0
+height = 600
+samples = 4
+max_depth = 5
+shadows = true
+soft_shadows = false
+shadow_rays = 4
+shadow_jitter = 0.25
+reflections = true
+refractions = true
+background = [0.0, 0.0, 0.0]
+checker_background = false
+
+[photon]
+enabled = false
+photons_per_light = 100000
+max_depth = 5
+light_power = 3300.0
+
+[photon.radius]
+direct = 1.0
+indirect = 1.0
+caustic = 1.0
+
+[photon.exposure]
+direct = 1.0
+indirect = 1.0
+caustic = 1.0

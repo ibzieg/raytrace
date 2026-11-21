@@ -1,0 +1,60 @@
+# Converted from legacy scene 'box_scene.scene'.
+
+[camera]
+eye = [0.0, 0.0, 10.0]
+target = [0.0, 0.0, 0.0]
+up = [0.0, 1.0, 0.0]
+near = 9.0
+far = 1000.0
+
+[camera.window]
+left = -5.4748603351955305
+right = 5.4748603351955305
+bottom = -5.0
+top = 5.0
+
+[[light]]
+position = [0.0, 6.74, -9.25]
+diffuse = [0.5, 0.5, 0.5]
+specular = [1.0, 1.0, 1.0]
+
+[[object]]
+mesh = "../objects/BoxRoom2.obj"
+
+[[object]]
+mesh = "../objects/chromeSphere.obj"
+transform = [[0.044112853705883026, 0.9984074831008911, -0.035237934440374374, -4.1050214767456055], [0.9906373023986816, -0.03915254399180412, 0.13079765439033508, -4.826487064361572], [0.12920959293842316, -0.040678102523088455, -0.9907857179641724, -11.588532447814941], [0.0, 0.0, 0.0, 1.0]]
+
+[[object]]
+mesh = "../objects/glassSphere.obj"
+transform = [[-0.9990526437759399, -0.015195402316749096, 0.04090151563286781, 3.420498847961426], [-0.008216429501771927, 0.9861515760421753, 0.1656692624092102, -5.602936267852783], [-0.04285242781043053, 0.16517668962478638, -0.9853388071060181, -4.622325897216797], [0.0, 0.0, 0.0, 1.0]]
+
+[render]
+width = 0
+height = 600
+samples = 4
+max_depth = 5
+shadows = true
+soft_shadows = false
+shadow_rays = 4
+shadow_jitter = 0.25
+reflections = true
+refractions = true
+background = [0.0, 0.0, 0.0]
+checker_background = false
+
+[photon]
+enabled = false
+photons_per_light = 100000
+max_depth = 5
+light_power = 3300.0
+
+[photon.radius]
+direct = 1.0
+indirect = 1.0
+caustic = 1.0
+
+[photon.exposure]
+direct = 1.0
+indirect = 1.0
+caustic = 1.0

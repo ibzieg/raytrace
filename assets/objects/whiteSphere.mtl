@@ -1,0 +1,15 @@
+# Ian made this...
+# Material Count: 1
+
+newmtl white
+
+Ka 0.0 0.0 0.0
+Kd 1.0 1.0 1.0
+Ks 1.0 1.0 1.0
+
+Ns 123.0
+Ni 0.0
+
+Ir 0.0
+It 0.0
+

@@ -1,0 +1,33 @@
+# Ian made this
+# 2011-05-04
+
+mtllib chromeSphere.mtl
+
+# A perfect sphere
+@sphere
+
+# with diameter 4 hopefully
+
+v -1.5  0.0   -1.5
+v  1.5  0.0   -1.5
+v -1.5  0.0    1.5
+v  1.5  0.0    1.5
+v  0.0  2.1213 0.0
+v  0.0 -2.1213 0.0
+
+vn 0.0 0.0 1.0
+
+
+s 0 
+g sphere0
+usemtl chrome
+
+f 2//1 1//1 5//1
+f 1//1 3//1 5//1
+f 3//1 4//1 5//1
+f 4//1 2//1 5//1
+
+f 2//1 6//1 1//1
+f 1//1 6//1 3//1
+f 3//1 6//1 4//1
+f 4//1 6//1 2//1
