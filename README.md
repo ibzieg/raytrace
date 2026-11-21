@@ -32,6 +32,17 @@ cargo build --release
 ./target/release/raytrace convert legacy/scenes/box_scene.scene -o assets/scenes/box_scene.toml
 ```
 
+### Viewer
+
+```sh
+cargo run --release -p raytrace-viewer -- assets/scenes/box_test_4.toml
+```
+
+An egui app with every render and photon setting. It re-renders on each change,
+first as a quick low-res preview and then at full resolution, filling in
+row by row. Photon maps are reused until a photon setting changes. You can
+save the PNG, or write the tweaked settings back to the scene file.
+
 Run `raytrace render --help` for all flags. Everything else (radii, exposure,
 depth, background…) is set in the scene file.
 
@@ -88,6 +99,7 @@ exposure = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
 ```
 crates/raytrace       library: scene loading, BVH, tracer, photon maps
 crates/raytrace-cli   `raytrace` binary
+crates/raytrace-viewer  egui interactive viewer
 assets/scenes         renderable TOML scenes
 assets/objects        OBJ/MTL meshes
 legacy/scenes         original XML scenes

@@ -1,7 +1,7 @@
 //! Whitted-style ray tracing with optional photon-map shading.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use anyhow::Result;
 use glam::DVec3;
@@ -54,16 +54,36 @@ impl<'a> Renderer<'a> {
     /// Renders all rows in parallel. `progress(rows_done, rows_total)` is
     /// called from worker threads as rows finish.
     pub fn render(&self, width: u32, height: u32, progress: &(dyn Fn(usize, usize) + Sync)) -> Image {
+        let done = AtomicUsize::new(0);
+        self.render_with(width, height, None, &|_, _| {
+            progress(done.fetch_add(1, Ordering::Relaxed) + 1, height as usize)
+        })
+        .expect("render without a cancel flag always completes")
+    }
+
+    /// Like [`Renderer::render`], but calls `on_row(row, pixels)` with each
+    /// finished row (top-down index, any order) and stops early once `cancel`
+    /// is set, returning None.
+    pub fn render_with(
+        &self,
+        width: u32,
+        height: u32,
+        cancel: Option<&AtomicBool>,
+        on_row: &(dyn Fn(usize, &[DVec3]) + Sync),
+    ) -> Option<Image> {
         let w = width as usize;
         let mut pixels = vec![DVec3::ZERO; w * height as usize];
-        let done = AtomicUsize::new(0);
         let px = DVec3::new(
             (self.window.right - self.window.left) / width as f64,
             (self.window.top - self.window.bottom) / height as f64,
             0.0,
         );
+        let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
         pixels.par_chunks_mut(w).enumerate().for_each(|(row, out)| {
+            if cancelled() {
+                return;
+            }
             // Image rows run top-down; camera y runs bottom-up.
             let y = height as usize - 1 - row;
             for (x, pixel) in out.iter_mut().enumerate() {
@@ -72,10 +92,10 @@ impl<'a> Renderer<'a> {
                     DVec3::new(self.window.left + x as f64 * px.x, self.window.bottom + y as f64 * px.y, -self.near);
                 *pixel = self.pixel(corner, px, &mut rng);
             }
-            progress(done.fetch_add(1, Ordering::Relaxed) + 1, height as usize);
+            on_row(row, out);
         });
 
-        Image { width, height, pixels }
+        (!cancelled()).then_some(Image { width, height, pixels })
     }
 
     fn pixel(&self, corner: DVec3, px: DVec3, rng: &mut Rng) -> DVec3 {

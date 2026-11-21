@@ -78,7 +78,7 @@ pub struct ObjectDef {
     pub transform: Option<Rows4>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderSettings {
     /// Image width in pixels. 0 = derive from `height` and the window aspect.
@@ -121,7 +121,7 @@ impl Default for RenderSettings {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PhotonSettings {
     /// Replace direct Phong shading with photon map radiance estimates.
@@ -148,7 +148,7 @@ impl Default for PhotonSettings {
 }
 
 /// One value for each of the three photon maps.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PhotonTriple {
     pub direct: f64,
     pub indirect: f64,
@@ -224,7 +224,11 @@ impl Scene {
     /// Output size, deriving a missing dimension from the window aspect so
     /// pixels stay square.
     pub fn image_size(&self) -> (u32, u32) {
-        let r = &self.file.render;
+        self.image_size_for(&self.file.render)
+    }
+
+    /// [`Scene::image_size`] with settings other than the scene's own.
+    pub fn image_size_for(&self, r: &RenderSettings) -> (u32, u32) {
         let aspect = self.file.camera.window.aspect();
         match (r.width, r.height) {
             (0, 0) => ((600.0 * aspect).round() as u32, 600),
