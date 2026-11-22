@@ -9,9 +9,10 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 
 - Whitted-style ray tracing: Phong shading, hard/soft shadows, mirror
   reflection and refraction
-- Photon mapping after Jensen: direct light from shadow rays, indirect and
-  caustic light from photon maps (kd-tree, k-nearest density estimates over a
-  flattened disc). The 2011 direct-map shading is still available.
+- Photon mapping after Jensen: direct light from shadow rays, caustics from
+  the caustic map, and indirect light from the indirect map or by final
+  gathering over precomputed irradiance (kd-tree, k-nearest density estimates
+  over a flattened disc). The 2011 direct-map shading is still available.
 - Triangle meshes from Wavefront OBJ/MTL, accelerated by a binned-SAH BVH, plus
   analytic spheres
 - N-rooks anti-aliasing; all cores via rayon; deterministic output
@@ -120,12 +121,20 @@ direct_lighting = "rays"   # or "map": read the direct photon map, as in 2011
 radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }   # max search radius
 gather = { direct = 200, indirect = 200, caustic = 80 }    # nearest photons; 0 = all in radius
 exposure = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
+final_gather = 0           # gather rays per shading point; 0 = read the indirect map
 ```
 
 Each map's estimate uses the `gather` nearest photons, out to `radius` at
 most, so it sharpens where photons are dense (caustics) and widens where they
 are sparse. With shadow rays the direct map is not read; `exposure.direct`
 scales the shadow-ray light instead.
+
+`final_gather` replaces the blotchy indirect map with rays over each visible
+point's hemisphere. Where they land, irradiance comes from points precomputed
+at every fourth photon from all three maps, using the indirect radius and
+count. It is smooth and shows color bleeding, but rooms with a small, very
+bright patch (like a light just under the ceiling) need around 1000 rays to
+avoid speckle. `--final-gather N` sets it from the CLI.
 
 ### Materials
 

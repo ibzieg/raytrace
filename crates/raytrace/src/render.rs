@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use crate::geometry::{Hit, PointLight, Ray, World};
 use crate::optics::{reflect, refract};
-use crate::photon::{ESTIMATE_SCALE, PhotonMaps};
+use crate::photon::{ESTIMATE_SCALE, KdTree, PhotonMaps};
 use crate::rng::Rng;
 use crate::scene::{DirectLighting, PhotonSettings, RenderSettings, Scene, Window};
 
@@ -64,6 +64,10 @@ impl Display {
         (c * 255.0).round().to_array().map(|v| v as u8)
     }
 }
+
+/// Surfaces with less diffuse reflectance than this (mostly mirror or glass)
+/// read indirect light from the photon map instead of final gathering.
+const MIN_GATHER_DIFFUSE: f64 = 0.1;
 
 pub struct Renderer<'a> {
     pub world: &'a World,
@@ -122,6 +126,13 @@ impl<'a> Renderer<'a> {
         );
         let camera_to_world = self.view.inverse();
         let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
+        let precomputed = match self.photons {
+            Some(maps) if self.photon_settings.final_gather > 0 => {
+                Some(maps.precomputed_irradiance(self.photon_settings))
+            }
+            _ => None,
+        };
+        let gather = precomputed.as_deref();
 
         pixels.par_chunks_mut(w).enumerate().for_each(|(row, out)| {
             if cancelled() {
@@ -133,7 +144,7 @@ impl<'a> Renderer<'a> {
                 let mut rng = Rng::new(((y as u64) << 32) | x as u64);
                 let corner =
                     DVec3::new(self.window.left + x as f64 * px.x, self.window.bottom + y as f64 * px.y, -self.near);
-                *pixel = self.pixel(corner, px, &camera_to_world, &mut rng);
+                *pixel = self.pixel(corner, px, &camera_to_world, &mut rng, gather);
             }
             on_row(row, out);
         });
@@ -141,13 +152,21 @@ impl<'a> Renderer<'a> {
         (!cancelled()).then_some(Image { width, height, pixels })
     }
 
-    /// `corner` and `px` are in camera space.
-    fn pixel(&self, corner: DVec3, px: DVec3, camera_to_world: &DMat4, rng: &mut Rng) -> DVec3 {
+    /// `corner` and `px` are in camera space. `gather` holds precomputed
+    /// irradiance when final gathering is on.
+    fn pixel(
+        &self,
+        corner: DVec3,
+        px: DVec3,
+        camera_to_world: &DMat4,
+        rng: &mut Rng,
+        gather: Option<&KdTree>,
+    ) -> DVec3 {
         let eye = camera_to_world.transform_point3(DVec3::ZERO);
         let primary = |p: DVec3| Ray::new(eye, camera_to_world.transform_vector3(p));
         let n = self.settings.samples.max(1) as usize;
         if n == 1 {
-            return self.trace(&primary(corner + px * 0.5), 0, false);
+            return self.trace(&primary(corner + px * 0.5), 0, false, rng, gather);
         }
         // N-rooks: one sample per row and per column of an n×n sub-grid.
         let mut cols: Vec<usize> = (0..n).collect();
@@ -158,13 +177,13 @@ impl<'a> Renderer<'a> {
         for (i, &j) in cols.iter().enumerate() {
             let offset =
                 DVec3::new((i as f64 + rng.next_f64()) / n as f64, (j as f64 + rng.next_f64()) / n as f64, 0.0);
-            sum += self.trace(&primary(corner + px * offset), 0, false);
+            sum += self.trace(&primary(corner + px * offset), 0, false, rng, gather);
         }
         sum / n as f64
     }
 
     /// Color seen along `ray`; the background when nothing is hit.
-    pub fn trace(&self, ray: &Ray, depth: u32, internal: bool) -> DVec3 {
+    fn trace(&self, ray: &Ray, depth: u32, internal: bool, rng: &mut Rng, gather: Option<&KdTree>) -> DVec3 {
         let Some(hit) = self.world.intersect(ray, f64::INFINITY) else {
             return self.background(ray);
         };
@@ -173,7 +192,12 @@ impl<'a> Renderer<'a> {
 
         let (base, specular) = match self.photons {
             Some(maps) => {
-                let estimate = maps.irradiance(&hit, m.kd, self.photon_settings);
+                let diffuse_part = 1.0 - m.reflectivity - m.transmissivity;
+                let gather = gather.filter(|_| diffuse_part >= MIN_GATHER_DIFFUSE);
+                let mut estimate = maps.irradiance(&hit, self.photon_settings, gather.is_none()) * m.kd;
+                if let Some(points) = gather {
+                    estimate += self.final_gather(ray, &hit, points, rng) * m.kd;
+                }
                 match self.photon_settings.direct_lighting {
                     DirectLighting::Rays => {
                         let (diffuse, specular) = self.direct_from_photon_power(ray, &hit);
@@ -189,7 +213,7 @@ impl<'a> Renderer<'a> {
         let mut reflect_factor = 0.0;
         // No reflections from inside an object, as in the original.
         if s.reflections && !internal && depth < s.max_depth && m.reflectivity > 0.0 {
-            reflect_color = self.trace(&reflect(ray, &hit), depth + 1, false);
+            reflect_color = self.trace(&reflect(ray, &hit), depth + 1, false, rng, gather);
             reflect_factor = m.reflectivity;
         }
 
@@ -197,7 +221,7 @@ impl<'a> Renderer<'a> {
         let mut refract_factor = 0.0;
         if s.refractions && depth < s.max_depth && m.transmissivity > 0.0 {
             let (refracted, now_internal) = refract(ray, &hit, internal, m.effective_ior());
-            refract_color = self.trace(&refracted, depth + 1, now_internal);
+            refract_color = self.trace(&refracted, depth + 1, now_internal, rng, gather);
             refract_factor = m.transmissivity;
         }
 
@@ -206,6 +230,39 @@ impl<'a> Renderer<'a> {
             + refract_color * refract_factor
             + reflect_color * reflect_factor
             + specular
+    }
+
+    /// Indirect irradiance at `hit` from cosine-distributed rays over its
+    /// hemisphere, each reading the precomputed irradiance where it lands.
+    /// Uses as many stratified samples as fit in a square grid, then random
+    /// ones.
+    fn final_gather(&self, ray: &Ray, hit: &Hit, points: &KdTree, rng: &mut Rng) -> DVec3 {
+        let p = self.photon_settings;
+        let count = p.final_gather as usize;
+        let side = (count as f64).sqrt() as usize;
+        let max_radius = p.radius.indirect;
+        let n = if hit.normal.dot(ray.dir) > 0.0 { -hit.normal } else { hit.normal };
+        let (t, b) = n.any_orthonormal_pair();
+        let mut sum = DVec3::ZERO;
+        for i in 0..count {
+            let (u1, u2) = if i < side * side {
+                ((i % side) as f64 + rng.next_f64(), (i / side) as f64 + rng.next_f64())
+            } else {
+                (rng.next_f64() * side as f64, rng.next_f64() * side as f64)
+            };
+            let (u1, u2) = (u1 / side as f64, u2 / side as f64);
+            let r = u1.sqrt();
+            let (sin, cos) = (std::f64::consts::TAU * u2).sin_cos();
+            let dir = t * (r * cos) + b * (r * sin) + n * (1.0 - u1).sqrt();
+            let Some(h) = self.world.intersect(&Ray::new(hit.point, dir), f64::INFINITY) else { continue };
+            let m = &self.world.materials[h.material];
+            let facing = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
+            let diffuse_part = 1.0 - m.reflectivity - m.transmissivity;
+            sum += points.nearest_irradiance(h.point, facing, max_radius) * m.kd * diffuse_part;
+        }
+        // With cosine-weighted directions, the cosine and the hemisphere's π
+        // cancel, leaving the plain average.
+        sum / count as f64
     }
 
     /// Phong shading. Returns (ambient + diffuse, specular).

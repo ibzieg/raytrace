@@ -233,6 +233,11 @@ pub struct PhotonSettings {
     pub radius: PhotonTriple,
     pub exposure: PhotonTriple,
     pub gather: GatherCounts,
+    /// Final gather rays per shading point for indirect light; 0 reads the
+    /// indirect map directly, which is faster but blotchy. Rooms with small,
+    /// very bright patches (a light near a wall) need many rays to avoid
+    /// speckle.
+    pub final_gather: u32,
 }
 
 impl Default for PhotonSettings {
@@ -246,6 +251,7 @@ impl Default for PhotonSettings {
             radius: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             exposure: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             gather: GatherCounts::default(),
+            final_gather: 0,
         }
     }
 }

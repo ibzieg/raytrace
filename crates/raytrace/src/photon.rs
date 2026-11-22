@@ -4,19 +4,22 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::{Arc, Mutex};
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use rayon::prelude::*;
 
 use crate::geometry::{Hit, Ray, World};
 use crate::optics::{reflect, refract};
 use crate::rng::Rng;
-use crate::scene::{DirectLighting, PhotonSettings};
+use crate::scene::{DirectLighting, PhotonSettings, PhotonTriple};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Photon {
     pub pos: DVec3,
     pub power: DVec3,
+    /// Surface normal on the side the photon arrived from.
+    pub normal: Vec3,
     /// Split axis when this photon is an interior kd-tree node.
     axis: u8,
 }
@@ -158,6 +161,17 @@ impl KdTree {
         }
         r2
     }
+
+    /// For a tree of precomputed irradiance points: the irradiance of the
+    /// nearest point within `max_radius` facing about the same way as
+    /// `facing`, or zero if there is none.
+    pub fn nearest_irradiance(&self, point: DVec3, facing: DVec3, max_radius: f64) -> DVec3 {
+        NEIGHBORS.with_borrow_mut(|heap| {
+            let facing = facing.as_vec3();
+            self.nearest(point, 1, max_radius, |p| p.normal.dot(facing) > MIN_NORMAL_COS, heap);
+            heap.peek().map_or(DVec3::ZERO, |n| self.photons[n.index as usize].power)
+        })
+    }
 }
 
 fn build_range(photons: &mut [Photon]) {
@@ -215,10 +229,23 @@ const SEARCH_COMPRESSION: f64 = 0.22;
 /// weights average 1/2 over the disc.
 pub const ESTIMATE_SCALE: f64 = 0.25;
 
+/// Irradiance is precomputed at every this many photons for final gathering.
+const PRECOMPUTE_STRIDE: usize = 4;
+
+/// A precomputed irradiance point only serves surfaces whose normal is within
+/// about 25° of its own.
+const MIN_NORMAL_COS: f32 = 0.9;
+
+/// Settings the precomputed irradiance depends on.
+type PrecomputeKey = (f64, u32, PhotonTriple);
+
 pub struct PhotonMaps {
     pub direct: KdTree,
     pub indirect: KdTree,
     pub caustic: KdTree,
+    /// Irradiance at a subset of the photons, for final gathering. Built on
+    /// first use and rebuilt when the estimate settings change.
+    precomputed: Mutex<Option<(PrecomputeKey, Arc<KdTree>)>>,
 }
 
 impl PhotonMaps {
@@ -245,19 +272,58 @@ impl PhotonMaps {
             direct: KdTree::build(buckets.direct),
             indirect: KdTree::build(buckets.indirect),
             caustic: KdTree::build(buckets.caustic),
+            precomputed: Mutex::default(),
         }
     }
 
-    /// The maps' radiance estimates, times the diffuse color. The direct map
-    /// is only read when it, not shadow rays, provides direct light.
-    pub fn irradiance(&self, hit: &Hit, kd: DVec3, settings: &PhotonSettings) -> DVec3 {
+    /// Irradiance at `hit` read straight from the maps: caustics, the direct
+    /// map when it (not shadow rays) provides direct light, and the indirect
+    /// map unless final gathering replaces it.
+    pub fn irradiance(&self, hit: &Hit, settings: &PhotonSettings, indirect: bool) -> DVec3 {
         let (r, e, k) = (&settings.radius, &settings.exposure, &settings.gather);
-        let mut total = estimate(&self.indirect, hit, r.indirect, k.indirect) * e.indirect
-            + estimate(&self.caustic, hit, r.caustic, k.caustic) * e.caustic;
-        if settings.direct_lighting == DirectLighting::Map {
-            total += estimate(&self.direct, hit, r.direct, k.direct) * e.direct;
+        let mut total = estimate(&self.caustic, hit.point, hit.normal, None, r.caustic, k.caustic) * e.caustic;
+        if indirect {
+            total += estimate(&self.indirect, hit.point, hit.normal, None, r.indirect, k.indirect) * e.indirect;
         }
-        total * kd
+        if settings.direct_lighting == DirectLighting::Map {
+            total += estimate(&self.direct, hit.point, hit.normal, None, r.direct, k.direct) * e.direct;
+        }
+        total
+    }
+
+    /// Total irradiance from all three maps at every [`PRECOMPUTE_STRIDE`]th
+    /// photon, as in Christensen's "Faster Photon Map Global Illumination".
+    /// Final gather rays then need one nearest-point lookup each instead of
+    /// three density estimates.
+    ///
+    /// Every map is read with the indirect radius and count, treating them as
+    /// one global map: caustics' tight estimates would turn stray caustic
+    /// photons into bright specks that gather rays pick up as noise.
+    pub fn precomputed_irradiance(&self, settings: &PhotonSettings) -> Arc<KdTree> {
+        let key = (settings.radius.indirect, settings.gather.indirect, settings.exposure);
+        let mut cache = self.precomputed.lock().unwrap();
+        if let Some((k, tree)) = &*cache
+            && *k == key
+        {
+            return tree.clone();
+        }
+        let (radius, count, e) = (settings.radius.indirect, settings.gather.indirect, &settings.exposure);
+        let photons = [&self.direct, &self.indirect, &self.caustic].into_iter().flat_map(|m| m.photons());
+        let samples: Vec<&Photon> = photons.step_by(PRECOMPUTE_STRIDE).collect();
+        let points = samples
+            .into_par_iter()
+            .map(|p| {
+                let n = p.normal.as_dvec3();
+                let side = Some(n);
+                let power = estimate(&self.direct, p.pos, n, side, radius, count) * e.direct
+                    + estimate(&self.indirect, p.pos, n, side, radius, count) * e.indirect
+                    + estimate(&self.caustic, p.pos, n, side, radius, count) * e.caustic;
+                Photon { power, ..*p }
+            })
+            .collect();
+        let tree = Arc::new(KdTree::build(points));
+        *cache = Some((key, tree.clone()));
+        tree
     }
 }
 
@@ -267,17 +333,19 @@ thread_local! {
 
 /// Density estimate with a cone (linear in d²) filter over a compressed disc,
 /// from the `count` nearest photons within `radius`, or all of them if
-/// `count` is 0.
-fn estimate(map: &KdTree, hit: &Hit, radius: f64, count: u32) -> DVec3 {
+/// `count` is 0. With `side`, only photons that arrived on that side of the
+/// surface count.
+fn estimate(map: &KdTree, point: DVec3, normal: DVec3, side: Option<DVec3>, radius: f64, count: u32) -> DVec3 {
     if map.is_empty() {
         return DVec3::ZERO;
     }
     let slab = radius * SEARCH_COMPRESSION;
-    let on_disc = |p: &Photon| (p.pos - hit.point).dot(hit.normal).abs() < slab;
+    let side = side.map(|s| s.as_vec3());
+    let on_disc = |p: &Photon| (p.pos - point).dot(normal).abs() < slab && side.is_none_or(|s| p.normal.dot(s) > 0.0);
     let mut sum = DVec3::ZERO;
     let r2 = if count == 0 {
         let r2 = radius * radius;
-        map.for_each_within(hit.point, radius, |p, d2| {
+        map.for_each_within(point, radius, |p, d2| {
             if on_disc(p) {
                 sum += p.power * (1.0 - d2 / r2);
             }
@@ -285,7 +353,7 @@ fn estimate(map: &KdTree, hit: &Hit, radius: f64, count: u32) -> DVec3 {
         r2
     } else {
         NEIGHBORS.with_borrow_mut(|heap| {
-            let r2 = map.nearest(hit.point, count as usize, radius, on_disc, heap);
+            let r2 = map.nearest(point, count as usize, radius, on_disc, heap);
             for n in heap.iter() {
                 sum += map.photons[n.index as usize].power * (1.0 - n.d2 / r2);
             }
@@ -336,7 +404,8 @@ fn trace_photon(
     }
 
     if r >= 0.5 {
-        let photon = Photon { pos: hit.point, power: power * pd, axis: 0 };
+        let facing = if hit.normal.dot(ray.dir) > 0.0 { -hit.normal } else { hit.normal };
+        let photon = Photon { pos: hit.point, power: power * pd, normal: facing.as_vec3(), axis: 0 };
         match kind {
             Kind::Direct => out.direct.push(photon),
             Kind::Indirect => out.indirect.push(photon),
@@ -356,6 +425,7 @@ mod tests {
             .map(|_| Photon {
                 pos: DVec3::new(rng.next_f64(), rng.next_f64(), rng.next_f64()) * 10.0,
                 power: DVec3::ONE,
+                normal: Vec3::Z,
                 axis: 0,
             })
             .collect();
@@ -377,6 +447,7 @@ mod tests {
             .map(|_| Photon {
                 pos: DVec3::new(rng.next_f64(), rng.next_f64(), rng.next_f64()) * 10.0,
                 power: DVec3::ONE,
+                normal: Vec3::Z,
                 axis: 0,
             })
             .collect();

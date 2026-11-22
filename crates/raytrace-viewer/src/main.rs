@@ -301,6 +301,10 @@ impl Viewer {
                             ui.selectable_value(&mut p.direct_lighting, DirectLighting::Map, "Photon map");
                         });
                     ui.end_row();
+                    ui.label("Final gather rays")
+                        .on_hover_text("Rays per shading point for indirect light; 0 reads the indirect map directly");
+                    ui.add(DragValue::new(&mut p.final_gather).range(0..=4096).speed(4.0));
+                    ui.end_row();
                     let direct_map = p.direct_lighting == DirectLighting::Map;
                     for (label, uses_map, radius, gather, exposure) in [
                         ("Direct", direct_map, &mut p.radius.direct, &mut p.gather.direct, &mut p.exposure.direct),

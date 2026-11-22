@@ -40,6 +40,10 @@ enum Command {
         /// the 2011 version did.
         #[arg(long)]
         direct_map: bool,
+        /// Final gather rays per shading point; 0 reads the indirect map
+        /// directly.
+        #[arg(long)]
+        final_gather: Option<u32>,
         #[arg(long)]
         soft_shadows: bool,
         /// Exposure in stops (2^EV scale) applied when writing the PNG.
@@ -75,6 +79,7 @@ fn main() -> Result<()> {
             photons,
             photon_count,
             direct_map,
+            final_gather,
             soft_shadows,
             exposure,
             gamma,
@@ -101,6 +106,9 @@ fn main() -> Result<()> {
             p.enabled |= photons || photon_count.is_some();
             if direct_map {
                 p.direct_lighting = DirectLighting::Map;
+            }
+            if let Some(n) = final_gather {
+                p.final_gather = n;
             }
 
             let world = World::from_scene(&scene);
