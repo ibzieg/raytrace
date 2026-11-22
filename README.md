@@ -42,8 +42,13 @@ Also from 2011: `box_test_4.toml`, `reflect_ring.toml`, `box_parallelepiped.toml
 ![Camera orbiting the rippled glass pane](docs/images/ripple_glass_orbit.gif)
 
 `ripple_glass.toml` with the camera swinging 36° around the pane: the view
-through the glass shifts while the caustics on the floor stay put. 120 CLI
-renders at 640×480, one scene file per frame, assembled with ffmpeg.
+through the glass shifts while the caustics on the floor stay put. Made with:
+
+```sh
+./target/release/raytrace animate assets/scenes/ripple_glass.toml --height 480 \
+    --frames 120 --orbit 36 -o renders/ripple_frames \
+    --video renders/ripple_glass_orbit.mp4 --gif docs/images/ripple_glass_orbit.gif
+```
 
 ## Usage
 
@@ -56,6 +61,12 @@ cargo build --release
 # Photon mapping
 ./target/release/raytrace render assets/scenes/box_test_4.toml -o box_pm.png \
     --photon-count 400000
+
+# 4 s animation: the camera swings 36° around the scene's target, easing in
+# and out (--turntable circles instead). Photon maps are built once and
+# reused for every frame. --video and --gif need ffmpeg.
+./target/release/raytrace animate assets/scenes/caustics.toml -o frames \
+    --frames 120 --fps 30 --video caustics.mp4 --gif caustics.gif
 
 # Convert an old XML scene
 ./target/release/raytrace convert legacy/scenes/box_scene.scene -o assets/scenes/box_scene.toml
