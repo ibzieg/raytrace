@@ -47,7 +47,7 @@ checker_background = false
 enabled = false
 photons_per_light = 100000
 max_depth = 5
-light_power = 3300.0
+light_power = 700.0
 
 [photon.radius]
 direct = 1.0

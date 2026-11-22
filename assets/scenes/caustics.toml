@@ -76,4 +76,5 @@ max_depth = 6
 [photon]
 enabled = true
 photons_per_light = 1000000
+light_power = 920.0
 radius = { direct = 0.9, indirect = 1.5, caustic = 0.15 }

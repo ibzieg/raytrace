@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::geometry::{Hit, PointLight, Ray, World};
 use crate::irradiance_cache::{IrradianceCache, Record};
 use crate::optics::{reflect, refract};
-use crate::photon::{ESTIMATE_SCALE, KdTree, PhotonMaps};
+use crate::photon::{KdTree, PhotonMaps};
 use crate::rng::Rng;
 use crate::scene::{DirectLighting, PhotonSettings, RenderSettings, Scene, Window};
 
@@ -398,16 +398,16 @@ impl<'a> Renderer<'a> {
         (self.world.materials[hit.material].ka + diffuse, specular)
     }
 
-    /// Phong lighting from each light's share of the photon power, falling off
-    /// with distance, on the same scale as the photon map estimates. No
-    /// ambient term: the indirect map provides that light.
+    /// Phong lighting from each light's emitted power, falling off with the
+    /// square of the distance: the irradiance its photons would estimate. The
+    /// light's specular color tints highlights the same way. No ambient term:
+    /// the indirect map or final gather provides that light.
     fn direct_from_photon_power(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
         let p = self.photon_settings;
-        let per_light = p.light_power / self.world.lights.len().max(1) as f64;
-        let scale = per_light / (4.0 * std::f64::consts::PI) * ESTIMATE_SCALE * p.exposure.direct;
-        self.direct(ray, hit, |_, dist| {
-            let intensity = DVec3::splat(scale / (dist * dist));
-            (intensity, intensity)
+        let scale = p.light_power / (4.0 * std::f64::consts::PI) * p.exposure.direct;
+        self.direct(ray, hit, |light, dist| {
+            let falloff = scale / (dist * dist);
+            (light.diffuse * falloff, light.specular * falloff)
         })
     }
 

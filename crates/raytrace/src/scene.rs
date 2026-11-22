@@ -226,7 +226,8 @@ pub struct PhotonSettings {
     pub enabled: bool,
     pub photons_per_light: u32,
     pub max_depth: u32,
-    /// Total power shared by all emitted photons.
+    /// Power each light emits, times its diffuse color. Direct light falls
+    /// off as power / (4π d²).
     pub light_power: f64,
     pub direct_lighting: DirectLighting,
     /// Maximum search radius of each map's estimate.
@@ -252,7 +253,7 @@ impl Default for PhotonSettings {
             enabled: false,
             photons_per_light: 100_000,
             max_depth: 5,
-            light_power: 3300.0,
+            light_power: 1000.0,
             direct_lighting: DirectLighting::default(),
             radius: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             exposure: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },

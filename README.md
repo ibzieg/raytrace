@@ -12,8 +12,9 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 - Photon mapping after Jensen: direct light from shadow rays, caustics from
   the caustic map, and indirect light from the indirect map or by final
   gathering over precomputed irradiance with an irradiance cache (kd-tree,
-  k-nearest density estimates over a flattened disc). The 2011 direct-map
-  shading is still available.
+  k-nearest density estimates over a flattened disc). Photons carry physical
+  power and follow one path each by Russian roulette on the material's
+  reflectances. The 2011 direct-map shading is still available.
 - Triangle meshes from Wavefront OBJ/MTL, accelerated by a binned-SAH BVH, plus
   analytic spheres
 - N-rooks anti-aliasing; all cores via rayon; deterministic output
@@ -126,7 +127,7 @@ refractions = true
 [photon]
 enabled = false
 photons_per_light = 100000
-light_power = 3300.0
+light_power = 1000.0       # per light, times its diffuse color
 direct_lighting = "rays"   # or "map": read the direct photon map, as in 2011
 radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }   # max search radius
 gather = { direct = 200, indirect = 200, caustic = 80 }    # nearest photons; 0 = all in radius
@@ -135,6 +136,15 @@ final_gather = 0           # rays per final gather; 0 = read the indirect map
 irradiance_cache = true    # interpolate gathers made at sparse points
 cache_accuracy = 0.25      # smaller = cache points closer together
 ```
+
+Each light emits `light_power` times its diffuse color, split over its
+photons. Direct light from shadow rays falls off as power / (4π d²), and the
+photon estimates measure the same irradiance, so the two add up consistently.
+At each surface a photon is stored if the surface has a diffuse part, then
+Russian roulette picks a diffuse bounce, mirror reflection, refraction or
+absorption in proportion to the material's reflectances. Closed rooms with
+light walls get much more bounce light than open scenes, as they should.
+`exposure` scales each map's contribution on top.
 
 Each map's estimate uses the `gather` nearest photons, out to `radius` at
 most, so it sharpens where photons are dense (caustics) and widens where they
@@ -191,9 +201,12 @@ legacy/scenes         original XML scenes
 
 ## Differences from the 2011 version
 
-Photon-mapped scenes now default to shadow rays for direct light and k-nearest
-gathering. `direct_lighting = "map"` with every `gather` count at 0 reproduces
-the original shading. The port also fixes these bugs:
+Photon mapping now follows Jensen's method: shadow rays for direct light,
+k-nearest estimates, final gathering, physical photon power and Russian
+roulette. The original stored photons at only half their hits and traced
+every branch with split power; `direct_lighting = "map"` still reads the
+direct map like the original, but with the new photon tracing. The port also
+fixes these bugs:
 
 - The photon emission bias and the diffuse-bounce hemisphere flip were no-ops
   (`dir.sMult(-1.0)` discarded its result). Emission is now uniform, which it

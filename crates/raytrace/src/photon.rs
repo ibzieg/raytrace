@@ -223,11 +223,9 @@ impl Buckets {
 /// nearby perpendicular surfaces don't bleed in.
 const SEARCH_COMPRESSION: f64 = 0.22;
 
-/// Matches light computed with shadow rays to the photon estimates' scale,
-/// which is half the true density twice over: photons are stored at only half
-/// of their surface hits (the other half bounce), and the cone filter's
-/// weights average 1/2 over the disc.
-pub const ESTIMATE_SCALE: f64 = 0.25;
+/// The cone filter's weights (1 - d²/r²) average 1/2 over the disc, so
+/// estimates are scaled back up by this.
+const CONE_NORMALIZATION: f64 = 2.0;
 
 /// Irradiance is precomputed at every this many photons for final gathering.
 const PRECOMPUTE_STRIDE: usize = 4;
@@ -249,21 +247,20 @@ pub struct PhotonMaps {
 }
 
 impl PhotonMaps {
+    /// Emits `photons_per_light` photons uniformly from each light. A light
+    /// emits `light_power` times its diffuse color in total.
     pub fn build(world: &World, settings: &PhotonSettings, seed: u64) -> Self {
-        let per_light = settings.photons_per_light as usize;
+        let per_light = settings.photons_per_light.max(1) as usize;
         let total = per_light * world.lights.len();
-        let power = DVec3::splat(settings.light_power / total.max(1) as f64);
 
         let buckets = (0..total)
             .into_par_iter()
             .fold(Buckets::default, |mut out, i| {
                 let light = &world.lights[i / per_light];
+                let power = light.diffuse * (settings.light_power / per_light as f64);
                 let mut rng = Rng::new(seed.wrapping_mul(0x1000_0000_01B3) ^ i as u64);
-                // The original biased photons downward, but the flip was a
-                // no-op (`dir.sMult(-1)` discarded its result), so emission was
-                // effectively uniform; keep it uniform.
                 let ray = Ray::new(light.position, rng.unit_vector());
-                trace_photon(world, settings, &ray, 0, false, power, Kind::Direct, &mut rng, &mut out);
+                trace_photon(world, settings, ray, power, &mut rng, &mut out);
                 out
             })
             .reduce(Buckets::default, Buckets::merge);
@@ -360,63 +357,149 @@ fn estimate(map: &KdTree, point: DVec3, normal: DVec3, side: Option<DVec3>, radi
             r2
         })
     };
-    sum / (std::f64::consts::PI * r2)
+    sum * (CONE_NORMALIZATION / (std::f64::consts::PI * r2))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Follows one photon, storing it at every surface with a diffuse part, and
+/// choosing what happens next by Russian roulette: diffuse bounce, mirror
+/// reflection, refraction or absorption, in proportion to the material's
+/// reflectances. A diffuse bounce rescales the power by reflectance over
+/// probability, so the expected power is right while color can shift.
+///
+/// Photons are sorted by path: straight from a light (direct), through glass
+/// or mirrors only (caustic), or after any diffuse bounce (indirect).
 fn trace_photon(
     world: &World,
     settings: &PhotonSettings,
-    ray: &Ray,
-    depth: u32,
-    internal: bool,
-    power: DVec3,
-    kind: Kind,
+    mut ray: Ray,
+    mut power: DVec3,
     rng: &mut Rng,
     out: &mut Buckets,
 ) {
-    let Some(hit) = world.intersect(ray, f64::INFINITY) else { return };
-    let m = &world.materials[hit.material];
-    let pr = m.reflectivity;
-    let pt = m.transmissivity;
-    let pd = 1.0 - pr - pt;
-    let r = rng.next_f64();
+    let mut kind = Kind::Direct;
+    let mut internal = false;
+    for _ in 0..=settings.max_depth {
+        let Some(hit) = world.intersect(&ray, f64::INFINITY) else { return };
+        let m = &world.materials[hit.material];
+        if internal {
+            // Inside glass: carry on to the far surface (or reflect inside).
+            let (refracted, now_internal) = refract(&ray, &hit, true, m.effective_ior());
+            (ray, internal) = (refracted, now_internal);
+            continue;
+        }
 
-    if depth < settings.max_depth {
-        if r < 0.5 {
-            // Diffuse bounce into the hemisphere around the normal. (The
-            // original's hemisphere flip was another discarded `sMult`.)
-            let mut dir = rng.unit_vector();
-            if dir.dot(hit.normal) < 0.0 {
-                dir = -dir;
-            }
-            let bounced = Ray::new(hit.point, dir);
-            trace_photon(world, settings, &bounced, depth + 1, false, power * m.kd * pd, Kind::Indirect, rng, out);
-        }
-        if pt > 0.0 {
-            let (refracted, now_internal) = refract(ray, &hit, internal, m.effective_ior());
-            trace_photon(world, settings, &refracted, depth + 1, now_internal, power * pt, Kind::Caustic, rng, out);
-        }
-        if pr > 0.0 && !internal {
-            let reflected = reflect(ray, &hit);
-            trace_photon(world, settings, &reflected, depth + 1, false, power * pr, Kind::Caustic, rng, out);
-        }
-    }
-
-    if r >= 0.5 {
         let facing = if hit.normal.dot(ray.dir) > 0.0 { -hit.normal } else { hit.normal };
-        let photon = Photon { pos: hit.point, power: power * pd, normal: facing.as_vec3(), axis: 0 };
-        match kind {
-            Kind::Direct => out.direct.push(photon),
-            Kind::Indirect => out.indirect.push(photon),
-            Kind::Caustic => out.caustic.push(photon),
+        let diffuse_part = (1.0 - m.reflectivity - m.transmissivity).max(0.0);
+        if diffuse_part > 0.0 {
+            let photon = Photon { pos: hit.point, power, normal: facing.as_vec3(), axis: 0 };
+            match kind {
+                Kind::Direct => out.direct.push(photon),
+                Kind::Indirect => out.indirect.push(photon),
+                Kind::Caustic => out.caustic.push(photon),
+            }
+        }
+
+        let diffuse = m.kd * diffuse_part;
+        let p_diffuse = diffuse.element_sum() / 3.0;
+        let xi = rng.next_f64();
+        if xi < p_diffuse {
+            power *= diffuse / p_diffuse;
+            ray = Ray::new(hit.point, cosine_direction(facing, rng));
+            kind = Kind::Indirect;
+        } else if xi < p_diffuse + m.reflectivity {
+            ray = reflect(&ray, &hit);
+            kind = after_specular(kind);
+        } else if xi < p_diffuse + m.reflectivity + m.transmissivity {
+            (ray, internal) = refract(&ray, &hit, false, m.effective_ior());
+            kind = after_specular(kind);
+        } else {
+            return;
         }
     }
+}
+
+/// Light that has bounced diffusely stays indirect after glass or mirrors;
+/// only light → specular → diffuse paths are caustics.
+fn after_specular(kind: Kind) -> Kind {
+    if kind == Kind::Indirect { Kind::Indirect } else { Kind::Caustic }
+}
+
+/// A direction in the hemisphere around `n`, with density proportional to
+/// the cosine, as light leaves a Lambertian surface.
+fn cosine_direction(n: DVec3, rng: &mut Rng) -> DVec3 {
+    let (t, b) = n.any_orthonormal_pair();
+    let u = rng.next_f64();
+    let r = u.sqrt();
+    let (sin, cos) = (std::f64::consts::TAU * rng.next_f64()).sin_cos();
+    t * (r * cos) + b * (r * sin) + n * (1.0 - u).sqrt()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::{PointLight, Sphere};
+    use crate::material::Material;
+
+    /// A point light at the center of a sphere of radius `R` whose walls have
+    /// diffuse reflectance `kd`.
+    const R: f64 = 5.0;
+    const LIGHT_POWER: f64 = 100.0;
+
+    fn light_in_sphere(kd: f64) -> (World, PhotonSettings) {
+        let mut world = World::empty();
+        world.materials.push(Material {
+            kd: DVec3::splat(kd),
+            reflectivity: 0.0,
+            transmissivity: 0.0,
+            ..Material::default()
+        });
+        world.spheres.push(Sphere { center: DVec3::ZERO, radius: R, material: 0 });
+        world.lights.push(PointLight { position: DVec3::ZERO, diffuse: DVec3::ONE, specular: DVec3::ONE });
+        let settings = PhotonSettings {
+            enabled: true,
+            photons_per_light: 200_000,
+            max_depth: 60,
+            light_power: LIGHT_POWER,
+            ..PhotonSettings::default()
+        };
+        (world, settings)
+    }
+
+    /// Average estimate over points spread around the sphere.
+    fn mean_estimate(map: &KdTree) -> f64 {
+        let mut rng = Rng::new(3);
+        let n = 40;
+        let total: f64 = (0..n)
+            .map(|_| {
+                let normal = rng.unit_vector();
+                estimate(map, normal * R, normal, None, 1.5, 400).x
+            })
+            .sum();
+        total / n as f64
+    }
+
+    #[test]
+    fn direct_estimate_matches_inverse_square_irradiance() {
+        let (world, settings) = light_in_sphere(0.0);
+        let maps = PhotonMaps::build(&world, &settings, 1);
+        let expected = LIGHT_POWER / (4.0 * std::f64::consts::PI * R * R);
+        let got = mean_estimate(&maps.direct);
+        assert!((got / expected - 1.0).abs() < 0.03, "direct {got} vs {expected}");
+        assert!(maps.indirect.is_empty(), "black walls absorb everything");
+    }
+
+    /// Inside a closed diffuse sphere every bounce spreads evenly, so the
+    /// indirect irradiance is E0 (ρ + ρ² + …) = E0 ρ / (1 - ρ).
+    #[test]
+    fn roulette_conserves_energy_over_bounces() {
+        let rho = 0.5;
+        let (world, settings) = light_in_sphere(rho);
+        let maps = PhotonMaps::build(&world, &settings, 1);
+        let e0 = LIGHT_POWER / (4.0 * std::f64::consts::PI * R * R);
+        let expected = e0 * rho / (1.0 - rho);
+        let got = mean_estimate(&maps.indirect);
+        assert!((got / expected - 1.0).abs() < 0.04, "indirect {got} vs {expected}");
+    }
 
     #[test]
     fn kd_radius_search_matches_brute_force() {

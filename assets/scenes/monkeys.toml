@@ -66,5 +66,6 @@ max_depth = 6
 [photon]
 enabled = true
 photons_per_light = 300000
+light_power = 700.0
 radius = { direct = 0.8, indirect = 1.2, caustic = 0.3 }
 final_gather = 8192
