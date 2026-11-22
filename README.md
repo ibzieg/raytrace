@@ -9,8 +9,9 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 
 - Whitted-style ray tracing: Phong shading, hard/soft shadows, mirror
   reflection and refraction
-- Photon mapping with separate direct, indirect and caustic maps (kd-tree,
-  radius search over a flattened disc)
+- Photon mapping after Jensen: direct light from shadow rays, indirect and
+  caustic light from photon maps (kd-tree, k-nearest density estimates over a
+  flattened disc). The 2011 direct-map shading is still available.
 - Triangle meshes from Wavefront OBJ/MTL, accelerated by a binned-SAH BVH, plus
   analytic spheres
 - N-rooks anti-aliasing; all cores via rayon; deterministic output
@@ -115,9 +116,16 @@ refractions = true
 enabled = false
 photons_per_light = 100000
 light_power = 3300.0
-radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
+direct_lighting = "rays"   # or "map": read the direct photon map, as in 2011
+radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }   # max search radius
+gather = { direct = 200, indirect = 200, caustic = 80 }    # nearest photons; 0 = all in radius
 exposure = { direct = 1.0, indirect = 1.0, caustic = 1.0 }
 ```
+
+Each map's estimate uses the `gather` nearest photons, out to `radius` at
+most, so it sharpens where photons are dense (caustics) and widens where they
+are sparse. With shadow rays the direct map is not read; `exposure.direct`
+scales the shadow-ray light instead.
 
 ### Materials
 
@@ -156,8 +164,9 @@ legacy/scenes         original XML scenes
 
 ## Differences from the 2011 version
 
-The port keeps the original shading model, so renders look the same. It does
-fix these bugs:
+Photon-mapped scenes now default to shadow rays for direct light and k-nearest
+gathering. `direct_lighting = "map"` with every `gather` count at 0 reproduces
+the original shading. The port also fixes these bugs:
 
 - The photon emission bias and the diffuse-bounce hemisphere flip were no-ops
   (`dir.sMult(-1.0)` discarded its result). Emission is now uniform, which it

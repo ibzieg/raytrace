@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use eframe::egui::{self, Color32, ColorImage, DragValue, PointerButton, TextureHandle, TextureOptions};
 use glam::DMat4;
-use raytrace::scene::{PhotonSettings, RenderSettings};
+use raytrace::scene::{DirectLighting, PhotonSettings, RenderSettings};
 use raytrace::{Display, PhotonMaps, Scene, World};
 
 use camera::OrbitCamera;
@@ -123,7 +123,7 @@ impl Viewer {
         let Some(view) = self.view() else { return };
         let Some(loaded) = &self.loaded else { return };
         let cached_maps = match &self.maps {
-            Some((settings, maps)) if *settings == self.photon => Some(maps.clone()),
+            Some((settings, maps)) if settings.same_emission(&self.photon) => Some(maps.clone()),
             _ => None,
         };
         self.job = Some(Job::spawn(
@@ -290,13 +290,30 @@ impl Viewer {
                     ui.label("Light power");
                     ui.add(DragValue::new(&mut p.light_power).range(0.0..=1e6).speed(10.0));
                     ui.end_row();
-                    for (label, radius, exposure) in [
-                        ("Direct", &mut p.radius.direct, &mut p.exposure.direct),
-                        ("Indirect", &mut p.radius.indirect, &mut p.exposure.indirect),
-                        ("Caustic", &mut p.radius.caustic, &mut p.exposure.caustic),
+                    ui.label("Direct light");
+                    egui::ComboBox::from_id_salt("direct_lighting")
+                        .selected_text(match p.direct_lighting {
+                            DirectLighting::Rays => "Shadow rays",
+                            DirectLighting::Map => "Photon map",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut p.direct_lighting, DirectLighting::Rays, "Shadow rays");
+                            ui.selectable_value(&mut p.direct_lighting, DirectLighting::Map, "Photon map");
+                        });
+                    ui.end_row();
+                    let direct_map = p.direct_lighting == DirectLighting::Map;
+                    for (label, uses_map, radius, gather, exposure) in [
+                        ("Direct", direct_map, &mut p.radius.direct, &mut p.gather.direct, &mut p.exposure.direct),
+                        ("Indirect", true, &mut p.radius.indirect, &mut p.gather.indirect, &mut p.exposure.indirect),
+                        ("Caustic", true, &mut p.radius.caustic, &mut p.gather.caustic, &mut p.exposure.caustic),
                     ] {
-                        ui.label(format!("{label} radius"));
-                        ui.add(DragValue::new(radius).range(0.01..=10.0).speed(0.01));
+                        ui.add_enabled(uses_map, egui::Label::new(format!("{label} radius")))
+                            .on_hover_text("Maximum search radius");
+                        ui.add_enabled(uses_map, DragValue::new(radius).range(0.01..=10.0).speed(0.01));
+                        ui.end_row();
+                        ui.add_enabled(uses_map, egui::Label::new(format!("{label} photons")))
+                            .on_hover_text("Nearest photons gathered; 0 takes all within the radius");
+                        ui.add_enabled(uses_map, DragValue::new(gather).range(0..=5000).speed(1.0));
                         ui.end_row();
                         ui.label(format!("{label} exposure"));
                         ui.add(DragValue::new(exposure).range(0.0..=100.0).speed(0.01));

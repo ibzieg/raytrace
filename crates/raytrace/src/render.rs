@@ -7,11 +7,11 @@ use anyhow::Result;
 use glam::{DMat4, DVec3};
 use rayon::prelude::*;
 
-use crate::geometry::{Hit, Ray, World};
+use crate::geometry::{Hit, PointLight, Ray, World};
 use crate::optics::{reflect, refract};
-use crate::photon::PhotonMaps;
+use crate::photon::{ESTIMATE_SCALE, PhotonMaps};
 use crate::rng::Rng;
-use crate::scene::{RenderSettings, Scene, Window};
+use crate::scene::{DirectLighting, PhotonSettings, RenderSettings, Scene, Window};
 
 /// Linear RGB, rows stored top to bottom.
 pub struct Image {
@@ -69,6 +69,8 @@ pub struct Renderer<'a> {
     pub world: &'a World,
     pub settings: &'a RenderSettings,
     pub photons: Option<&'a PhotonMaps>,
+    /// How the photon maps are read.
+    pub photon_settings: &'a PhotonSettings,
     /// World-to-camera matrix.
     pub view: DMat4,
     pub window: Window,
@@ -83,6 +85,7 @@ impl<'a> Renderer<'a> {
             world,
             settings: &scene.file.render,
             photons,
+            photon_settings: &scene.file.photon,
             view: scene.view,
             window: cam.window,
             near: cam.near,
@@ -169,7 +172,16 @@ impl<'a> Renderer<'a> {
         let m = &self.world.materials[hit.material];
 
         let (base, specular) = match self.photons {
-            Some(maps) => (maps.irradiance(&hit, m.kd), DVec3::ZERO),
+            Some(maps) => {
+                let estimate = maps.irradiance(&hit, m.kd, self.photon_settings);
+                match self.photon_settings.direct_lighting {
+                    DirectLighting::Rays => {
+                        let (diffuse, specular) = self.direct_from_photon_power(ray, &hit);
+                        (estimate + diffuse, specular)
+                    }
+                    DirectLighting::Map => (estimate, DVec3::ZERO),
+                }
+            }
             None => self.shade(ray, &hit),
         };
 
@@ -198,6 +210,27 @@ impl<'a> Renderer<'a> {
 
     /// Phong shading. Returns (ambient + diffuse, specular).
     fn shade(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
+        let (diffuse, specular) = self.direct(ray, hit, |light, _| (light.diffuse, light.specular));
+        // Ambient is the material's Ka alone; light ambient terms were unused.
+        (self.world.materials[hit.material].ka + diffuse, specular)
+    }
+
+    /// Phong lighting from each light's share of the photon power, falling off
+    /// with distance, on the same scale as the photon map estimates. No
+    /// ambient term: the indirect map provides that light.
+    fn direct_from_photon_power(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
+        let p = self.photon_settings;
+        let per_light = p.light_power / self.world.lights.len().max(1) as f64;
+        let scale = per_light / (4.0 * std::f64::consts::PI) * ESTIMATE_SCALE * p.exposure.direct;
+        self.direct(ray, hit, |_, dist| {
+            let intensity = DVec3::splat(scale / (dist * dist));
+            (intensity, intensity)
+        })
+    }
+
+    /// Diffuse and specular light from each visible light, where
+    /// `intensity(light, distance)` gives its diffuse and specular colors.
+    fn direct(&self, ray: &Ray, hit: &Hit, intensity: impl Fn(&PointLight, f64) -> (DVec3, DVec3)) -> (DVec3, DVec3) {
         let m = &self.world.materials[hit.material];
         let n = hit.normal;
         let v = -ray.dir;
@@ -220,11 +253,11 @@ impl<'a> Renderer<'a> {
             let ln = l.dot(n).max(0.0);
             let r = crate::optics::reflect_dir(-l, n);
             let rv = if m.shininess > 0.0 { r.dot(v).max(0.0).powf(m.shininess) } else { 0.0 };
-            diffuse += m.kd * light.diffuse * ln * visibility;
-            specular += m.ks * light.specular * rv * visibility;
+            let (light_diffuse, light_specular) = intensity(light, dist);
+            diffuse += m.kd * light_diffuse * ln * visibility;
+            specular += m.ks * light_specular * rv * visibility;
         }
-        // Ambient is the material's Ka alone; light ambient terms were unused.
-        (m.ka + diffuse, specular)
+        (diffuse, specular)
     }
 
     fn occluded(&self, from: DVec3, dir: DVec3, dist: f64) -> bool {

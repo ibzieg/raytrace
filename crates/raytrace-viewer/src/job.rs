@@ -124,6 +124,7 @@ impl Job {
             world: &input.world,
             settings: &input.render,
             photons: maps.as_deref(),
+            photon_settings: &input.photon,
             view: input.view,
             window: cam.window,
             near: cam.near,

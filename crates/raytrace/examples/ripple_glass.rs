@@ -15,6 +15,7 @@ const N: usize = 200;
 const HALF_THICKNESS: f64 = 0.06;
 
 /// (center x, center y, amplitude, wavelength, decay distance)
+#[rustfmt::skip]
 const DROPS: [(f64, f64, f64, f64, f64); 3] = [
     (-0.30, 0.25, 0.010, 0.34, 1.0),
     (0.45, -0.35, 0.006, 0.26, 0.7),

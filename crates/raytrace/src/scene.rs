@@ -222,14 +222,17 @@ impl Default for RenderSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PhotonSettings {
-    /// Replace direct Phong shading with photon map radiance estimates.
+    /// Shade with photon maps instead of Phong lighting.
     pub enabled: bool,
     pub photons_per_light: u32,
     pub max_depth: u32,
     /// Total power shared by all emitted photons.
     pub light_power: f64,
+    pub direct_lighting: DirectLighting,
+    /// Maximum search radius of each map's estimate.
     pub radius: PhotonTriple,
     pub exposure: PhotonTriple,
+    pub gather: GatherCounts,
 }
 
 impl Default for PhotonSettings {
@@ -239,9 +242,49 @@ impl Default for PhotonSettings {
             photons_per_light: 100_000,
             max_depth: 5,
             light_power: 3300.0,
+            direct_lighting: DirectLighting::default(),
             radius: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             exposure: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
+            gather: GatherCounts::default(),
         }
+    }
+}
+
+impl PhotonSettings {
+    /// Whether maps built with `other` can be reused with these settings;
+    /// the rest only affects how they are read.
+    pub fn same_emission(&self, other: &Self) -> bool {
+        self.photons_per_light == other.photons_per_light
+            && self.max_depth == other.max_depth
+            && self.light_power == other.light_power
+    }
+}
+
+/// How photon-mapped renders light surfaces directly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectLighting {
+    /// Shadow rays to each light, as in Jensen's method.
+    #[default]
+    Rays,
+    /// The direct photon map's estimate, as the 2011 version did. Faster but
+    /// blotchy.
+    Map,
+}
+
+/// Photons gathered per estimate: the nearest this many within the map's
+/// radius. 0 takes every photon within the radius.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GatherCounts {
+    pub direct: u32,
+    pub indirect: u32,
+    pub caustic: u32,
+}
+
+impl Default for GatherCounts {
+    fn default() -> Self {
+        Self { direct: 200, indirect: 200, caustic: 80 }
     }
 }
 

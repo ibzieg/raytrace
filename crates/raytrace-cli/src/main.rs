@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use raytrace::scene::DirectLighting;
 use raytrace::{Display, PhotonMaps, Renderer, Scene, World, legacy};
 
 #[derive(Parser)]
@@ -29,12 +30,16 @@ enum Command {
         /// Samples per pixel.
         #[arg(short, long)]
         samples: Option<u32>,
-        /// Shade with photon maps instead of direct lighting.
+        /// Shade with photon mapping instead of Phong lighting.
         #[arg(short, long)]
         photons: bool,
         /// Photons emitted per light (implies --photons).
         #[arg(long)]
         photon_count: Option<u32>,
+        /// Take direct light from the photon map instead of shadow rays, as
+        /// the 2011 version did.
+        #[arg(long)]
+        direct_map: bool,
         #[arg(long)]
         soft_shadows: bool,
         /// Exposure in stops (2^EV scale) applied when writing the PNG.
@@ -69,6 +74,7 @@ fn main() -> Result<()> {
             samples,
             photons,
             photon_count,
+            direct_map,
             soft_shadows,
             exposure,
             gamma,
@@ -93,6 +99,9 @@ fn main() -> Result<()> {
                 p.photons_per_light = n;
             }
             p.enabled |= photons || photon_count.is_some();
+            if direct_map {
+                p.direct_lighting = DirectLighting::Map;
+            }
 
             let world = World::from_scene(&scene);
             eprintln!(
