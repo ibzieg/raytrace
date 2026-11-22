@@ -68,11 +68,29 @@ impl Window {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LightDef {
+    /// Center of the light.
     pub position: [f64; 3],
     #[serde(default = "one3")]
     pub diffuse: [f64; 3],
     #[serde(default = "one3")]
     pub specular: [f64; 3],
+    /// Makes this a glowing sphere of this radius.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+    /// Makes this a one-sided rectangular panel, width by height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[f64; 2]>,
+    /// The direction a panel faces.
+    #[serde(default = "down", skip_serializing_if = "is_down")]
+    pub normal: [f64; 3],
+}
+
+fn down() -> [f64; 3] {
+    [0.0, -1.0, 0.0]
+}
+
+fn is_down(n: &[f64; 3]) -> bool {
+    *n == down()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

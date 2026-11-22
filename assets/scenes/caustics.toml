@@ -10,6 +10,7 @@ window = { left = -0.5333, right = 0.5333, bottom = -0.4, top = 0.4 }
 
 [[light]]
 position = [1.0, 9.0, 1.0]
+radius = 0.8               # a glowing sphere, for soft shadows
 diffuse = [0.9, 0.9, 0.9]
 specular = [1.0, 1.0, 1.0]
 

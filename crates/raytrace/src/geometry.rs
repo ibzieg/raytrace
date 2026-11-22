@@ -4,6 +4,7 @@
 
 use glam::{DMat3, DVec3};
 
+use crate::light::Light;
 use crate::material::Material;
 use crate::scene::Scene;
 
@@ -105,18 +106,11 @@ impl Sphere {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct PointLight {
-    pub position: DVec3,
-    pub diffuse: DVec3,
-    pub specular: DVec3,
-}
-
 pub struct World {
     pub triangles: Vec<Triangle>,
     pub spheres: Vec<Sphere>,
     pub materials: Vec<Material>,
-    pub lights: Vec<PointLight>,
+    pub lights: Vec<Light>,
     bvh: Vec<BvhNode>,
 }
 
@@ -161,12 +155,7 @@ impl World {
             }
         }
 
-        let lights = scene
-            .file
-            .lights
-            .iter()
-            .map(|l| PointLight { position: l.position.into(), diffuse: l.diffuse.into(), specular: l.specular.into() })
-            .collect();
+        let lights = scene.file.lights.iter().map(Light::from_def).collect();
 
         let bvh = build_bvh(&mut triangles);
         Self { triangles, spheres, materials, lights, bvh }

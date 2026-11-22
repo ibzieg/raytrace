@@ -56,6 +56,9 @@ pub fn convert(xml: &str, mesh_dir: &Path) -> Result<SceneFile> {
             position: round3(camera_to_world.transform_point3(camera_pos)),
             diffuse: rgb(child(light, "diffuse")?)?,
             specular: rgb(child(light, "specular")?)?,
+            radius: None,
+            size: None,
+            normal: [0.0, -1.0, 0.0],
         });
     }
 

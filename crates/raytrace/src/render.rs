@@ -7,8 +7,9 @@ use anyhow::Result;
 use glam::{DMat4, DVec3};
 use rayon::prelude::*;
 
-use crate::geometry::{Hit, PointLight, Ray, World};
+use crate::geometry::{Hit, Ray, World};
 use crate::irradiance_cache::{IrradianceCache, Record};
+use crate::light::Light;
 use crate::optics::{reflect, refract};
 use crate::photon::{KdTree, PhotonMaps};
 use crate::rng::Rng;
@@ -281,7 +282,11 @@ impl<'a> Renderer<'a> {
 
     /// Color seen along `ray`; the background when nothing is hit.
     fn trace(&self, ray: &Ray, depth: u32, internal: bool, ctx: &mut Ctx) -> DVec3 {
-        let Some(hit) = self.world.intersect(ray, f64::INFINITY) else {
+        let hit = self.world.intersect(ray, f64::INFINITY);
+        if let Some(light) = self.light_hit(ray, hit.as_ref().map_or(f64::INFINITY, |h| h.t)) {
+            return self.emitted(light);
+        }
+        let Some(hit) = hit else {
             return self.background(ray);
         };
         let m = &self.world.materials[hit.material];
@@ -305,13 +310,13 @@ impl<'a> Renderer<'a> {
                     (maps.irradiance(&hit, self.photon_settings, matches!(indirect, Indirect::Map)) + gathered) * m.kd;
                 match self.photon_settings.direct_lighting {
                     DirectLighting::Rays => {
-                        let (diffuse, specular) = self.direct_from_photon_power(ray, &hit);
+                        let (diffuse, specular) = self.direct_from_photon_power(ray, &hit, &mut ctx.rng);
                         (estimate + diffuse, specular)
                     }
                     DirectLighting::Map => (estimate, DVec3::ZERO),
                 }
             }
-            None => self.shade(ray, &hit),
+            None => self.shade(ray, &hit, &mut ctx.rng),
         };
 
         let [(reflect_color, reflect_factor), (refract_color, refract_factor)] =
@@ -392,8 +397,12 @@ impl<'a> Renderer<'a> {
     }
 
     /// Phong shading. Returns (ambient + diffuse, specular).
-    fn shade(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
-        let (diffuse, specular) = self.direct(ray, hit, |light, _| (light.diffuse, light.specular));
+    fn shade(&self, ray: &Ray, hit: &Hit, rng: &mut Rng) -> (DVec3, DVec3) {
+        // A light at its brightest (straight ahead of a panel) gives its colors.
+        let (diffuse, specular) = self.direct(ray, hit, rng, |light, _, emission| {
+            let scale = emission / light.peak_emission();
+            (light.diffuse * scale, light.specular * scale)
+        });
         // Ambient is the material's Ka alone; light ambient terms were unused.
         (self.world.materials[hit.material].ka + diffuse, specular)
     }
@@ -402,25 +411,65 @@ impl<'a> Renderer<'a> {
     /// square of the distance: the irradiance its photons would estimate. The
     /// light's specular color tints highlights the same way. No ambient term:
     /// the indirect map or final gather provides that light.
-    fn direct_from_photon_power(&self, ray: &Ray, hit: &Hit) -> (DVec3, DVec3) {
+    fn direct_from_photon_power(&self, ray: &Ray, hit: &Hit, rng: &mut Rng) -> (DVec3, DVec3) {
         let p = self.photon_settings;
-        let scale = p.light_power / (4.0 * std::f64::consts::PI) * p.exposure.direct;
-        self.direct(ray, hit, |light, dist| {
-            let falloff = scale / (dist * dist);
+        let scale = p.light_power * p.exposure.direct;
+        self.direct(ray, hit, rng, |light, dist, emission| {
+            let falloff = scale * emission / (dist * dist);
             (light.diffuse * falloff, light.specular * falloff)
         })
     }
 
     /// Diffuse and specular light from each visible light, where
-    /// `intensity(light, distance)` gives its diffuse and specular colors.
-    fn direct(&self, ray: &Ray, hit: &Hit, intensity: impl Fn(&PointLight, f64) -> (DVec3, DVec3)) -> (DVec3, DVec3) {
+    /// `intensity(light, distance, emission)` gives its diffuse and specular
+    /// colors for a sample emitting `emission` (per unit power and steradian)
+    /// toward the shading point. Area lights are sampled on a jittered grid of
+    /// `shadow_rays`² points.
+    fn direct(
+        &self,
+        ray: &Ray,
+        hit: &Hit,
+        rng: &mut Rng,
+        intensity: impl Fn(&Light, f64, f64) -> (DVec3, DVec3),
+    ) -> (DVec3, DVec3) {
         let m = &self.world.materials[hit.material];
         let n = hit.normal;
         let v = -ray.dir;
         let mut diffuse = DVec3::ZERO;
         let mut specular = DVec3::ZERO;
+        let phong = |l: DVec3| {
+            let ln = l.dot(n).max(0.0);
+            let r = crate::optics::reflect_dir(-l, n);
+            let rv = if m.shininess > 0.0 { r.dot(v).max(0.0).powf(m.shininess) } else { 0.0 };
+            (ln, rv)
+        };
 
         for light in &self.world.lights {
+            if !light.is_point() {
+                let side = self.settings.shadow_rays.max(1) as usize;
+                let (mut d, mut s) = (DVec3::ZERO, DVec3::ZERO);
+                for i in 0..side * side {
+                    let u = ((i % side) as f64 + rng.next_f64()) / side as f64;
+                    let w = ((i / side) as f64 + rng.next_f64()) / side as f64;
+                    let sample = light.sample(u, w, Some(hit.point));
+                    let to_light = sample.point - hit.point;
+                    let dist = to_light.length();
+                    let l = to_light / dist;
+                    let emission = light.emission(&sample, -l);
+                    if emission <= 0.0 || (self.settings.shadows && self.occluded(hit.point, l, dist)) {
+                        continue;
+                    }
+                    let (ln, rv) = phong(l);
+                    let (light_diffuse, light_specular) = intensity(light, dist, emission);
+                    d += m.kd * light_diffuse * ln;
+                    s += m.ks * light_specular * rv;
+                }
+                let count = (side * side) as f64;
+                diffuse += d / count;
+                specular += s / count;
+                continue;
+            }
+
             let to_light = light.position - hit.point;
             let dist = to_light.length();
             let l = to_light / dist;
@@ -433,14 +482,36 @@ impl<'a> Renderer<'a> {
                 continue;
             };
 
-            let ln = l.dot(n).max(0.0);
-            let r = crate::optics::reflect_dir(-l, n);
-            let rv = if m.shininess > 0.0 { r.dot(v).max(0.0).powf(m.shininess) } else { 0.0 };
-            let (light_diffuse, light_specular) = intensity(light, dist);
+            let (ln, rv) = phong(l);
+            let (light_diffuse, light_specular) = intensity(light, dist, light.peak_emission());
             diffuse += m.kd * light_diffuse * ln * visibility;
             specular += m.ks * light_specular * rv * visibility;
         }
         (diffuse, specular)
+    }
+
+    /// The nearest area light `ray` sees before `t_max`.
+    fn light_hit(&self, ray: &Ray, t_max: f64) -> Option<&Light> {
+        let mut nearest = (t_max, None);
+        for light in &self.world.lights {
+            if let Some(t) = light.intersect(ray, nearest.0) {
+                nearest = (t, Some(light));
+            }
+        }
+        nearest.1
+    }
+
+    /// What the camera sees on an area light's surface. With photon mapping
+    /// that is its power per area (π times its radiance, the scale shading
+    /// uses); otherwise its color at full brightness.
+    fn emitted(&self, light: &Light) -> DVec3 {
+        match self.photons {
+            Some(_) => {
+                let p = self.photon_settings;
+                light.diffuse * (p.light_power * p.exposure.direct / light.area())
+            }
+            None => light.diffuse / light.diffuse.max_element().max(1e-9),
+        }
     }
 
     fn occluded(&self, from: DVec3, dir: DVec3, dist: f64) -> bool {

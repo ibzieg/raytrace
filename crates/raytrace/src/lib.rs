@@ -6,6 +6,7 @@
 pub mod geometry;
 pub mod irradiance_cache;
 pub mod legacy;
+pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod optics;

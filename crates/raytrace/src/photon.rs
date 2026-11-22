@@ -10,6 +10,7 @@ use glam::{DVec3, Vec3};
 use rayon::prelude::*;
 
 use crate::geometry::{Hit, Ray, World};
+use crate::light::Light;
 use crate::optics::{reflect, refract};
 use crate::rng::Rng;
 use crate::scene::{DirectLighting, PhotonSettings, PhotonTriple};
@@ -227,7 +228,9 @@ struct ProjectionMap {
 }
 
 impl ProjectionMap {
-    fn new(world: &World, light: DVec3) -> Self {
+    /// Rays leave from scattered points on an area light, so a cell is marked
+    /// if glass or a mirror is first in its direction from anywhere on it.
+    fn new(world: &World, light: &Light) -> Self {
         let specular: Vec<bool> = (0..PROJECTION_ROWS * PROJECTION_COLS)
             .into_par_iter()
             .map(|cell| {
@@ -235,7 +238,9 @@ impl ProjectionMap {
                     let u = (k % PROJECTION_SAMPLES) as f64 + 0.5;
                     let v = (k / PROJECTION_SAMPLES) as f64 + 0.5;
                     let dir = cell_direction(cell, u / PROJECTION_SAMPLES as f64, v / PROJECTION_SAMPLES as f64);
-                    world.intersect(&Ray::new(light, dir), f64::INFINITY).is_some_and(|h| {
+                    let mut rng = Rng::new((cell * PROJECTION_SAMPLES * PROJECTION_SAMPLES + k) as u64);
+                    let origin = light.sample(rng.next_f64(), rng.next_f64(), None).point;
+                    world.intersect(&Ray::new(origin, dir), f64::INFINITY).is_some_and(|h| {
                         let m = &world.materials[h.material];
                         m.reflectivity + m.transmissivity > 0.0
                     })
@@ -343,7 +348,16 @@ impl PhotonMaps {
                 let light = &world.lights[i / per_light];
                 let power = light.diffuse * (settings.light_power / per_light as f64);
                 let mut rng = Rng::new(seed.wrapping_mul(0x1000_0000_01B3) ^ i as u64);
-                let ray = Ray::new(light.position, rng.unit_vector());
+                let ray = match light.is_point() {
+                    true => Ray::new(light.position, rng.unit_vector()),
+                    // Area lights emit from anywhere on their surface, like a
+                    // matte emitter.
+                    false => {
+                        let s = light.sample(rng.next_f64(), rng.next_f64(), None);
+                        let normal = s.normal.unwrap_or(DVec3::Z);
+                        Ray::new(s.point, cosine_direction(normal, &mut rng))
+                    }
+                };
                 trace_photon(world, settings, global_pass, ray, power, &mut rng, &mut out);
                 out
             })
@@ -351,7 +365,7 @@ impl PhotonMaps {
 
         if targeted {
             let per_light = settings.caustic_photons as usize;
-            let maps: Vec<ProjectionMap> = world.lights.iter().map(|l| ProjectionMap::new(world, l.position)).collect();
+            let maps: Vec<ProjectionMap> = world.lights.iter().map(|l| ProjectionMap::new(world, l)).collect();
             let caustics = (0..per_light * world.lights.len())
                 .into_par_iter()
                 .fold(Buckets::default, |mut out, i| {
@@ -359,11 +373,26 @@ impl PhotonMaps {
                     if map.cells.is_empty() {
                         return out;
                     }
-                    // Only the covered share of the light's power goes this way.
-                    let power = light.diffuse * (settings.light_power * map.coverage() / per_light as f64);
                     let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ i as u64);
-                    let ray = Ray::new(light.position, map.sample(&mut rng));
-                    trace_photon(world, settings, Pass::Caustic, ray, power, &mut rng, &mut out);
+                    let origin = light.sample(rng.next_f64(), rng.next_f64(), None);
+                    let dir = map.sample(&mut rng);
+                    // Directions are drawn evenly over the covered cells, so
+                    // weight by how strongly the light emits that way: for a
+                    // point light, just the covered share of its power.
+                    let emission = light.emission(&origin, dir) * 4.0 * std::f64::consts::PI;
+                    if emission <= 0.0 {
+                        return out;
+                    }
+                    let power = light.diffuse * (settings.light_power * map.coverage() * emission / per_light as f64);
+                    trace_photon(
+                        world,
+                        settings,
+                        Pass::Caustic,
+                        Ray::new(origin.point, dir),
+                        power,
+                        &mut rng,
+                        &mut out,
+                    );
                     out
                 })
                 .reduce(Buckets::default, Buckets::merge);
@@ -548,7 +577,7 @@ fn cosine_direction(n: DVec3, rng: &mut Rng) -> DVec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{PointLight, Sphere};
+    use crate::geometry::Sphere;
     use crate::material::Material;
 
     /// A point light at the center of a sphere of radius `R` whose walls have
@@ -565,7 +594,7 @@ mod tests {
             ..Material::default()
         });
         world.spheres.push(Sphere { center: DVec3::ZERO, radius: R, material: 0 });
-        world.lights.push(PointLight { position: DVec3::ZERO, diffuse: DVec3::ONE, specular: DVec3::ONE });
+        world.lights.push(Light::point(DVec3::ZERO, DVec3::ONE, DVec3::ONE));
         let settings = PhotonSettings {
             enabled: true,
             photons_per_light: 200_000,
@@ -597,6 +626,30 @@ mod tests {
         let got = mean_estimate(&maps.direct);
         assert!((got / expected - 1.0).abs() < 0.03, "direct {got} vs {expected}");
         assert!(maps.indirect.is_empty(), "black walls absorb everything");
+    }
+
+    /// A small panel facing down sends Φ cos θ / π per steradian, so straight
+    /// below it at distance R the irradiance is Φ / (π R²).
+    #[test]
+    fn panel_light_photons_follow_its_cosine_lobe() {
+        let (mut world, settings) = light_in_sphere(0.0);
+        world.lights[0].shape =
+            crate::light::LightShape::Rect { half_u: DVec3::X * 0.1, half_v: DVec3::Z * 0.1, normal: DVec3::NEG_Y };
+        let maps = PhotonMaps::build(&world, &settings, 1);
+        let mut rng = Rng::new(5);
+        let n = 20;
+        let got = (0..n)
+            .map(|_| {
+                // Points near the bottom, where the panel faces.
+                let normal = (DVec3::NEG_Y + rng.unit_vector() * 0.05).normalize();
+                estimate(&maps.direct, normal * R, normal, None, 1.5, 400).x
+                    / (normal.dot(DVec3::NEG_Y) * normal.dot(DVec3::NEG_Y))
+            })
+            .sum::<f64>()
+            / n as f64;
+        let expected = LIGHT_POWER / (std::f64::consts::PI * R * R);
+        assert!((got / expected - 1.0).abs() < 0.03, "panel {got} vs {expected}");
+        assert!(maps.direct.photons().iter().all(|p| p.pos.y < 0.1), "a panel facing down lights nothing above it");
     }
 
     /// A clear glass ball beside the light: every photon that reaches it ends

@@ -9,6 +9,8 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 
 - Whitted-style ray tracing: Phong shading, hard/soft shadows, mirror
   reflection and refraction
+- Point lights, glowing spheres and rectangular panels; area lights cast real
+  soft shadows and show up in the image and in mirrors
 - Photon mapping after Jensen: direct light from shadow rays, caustics from
   the caustic map, and indirect light from the indirect map or by final
   gathering over precomputed irradiance with an irradiance cache (kd-tree,
@@ -29,7 +31,7 @@ were converted from the 2011 project.
 | | |
 |---|---|
 | ![](docs/images/ripple_glass.png) `ripple_glass.toml`: a rippled glass pane bending the view behind it and casting caustics (photon mapped) | ![](docs/images/caustics.png) `caustics.toml`: glass focusing light (photon mapped) |
-| ![](docs/images/monkeys.png) `monkeys.toml`: glass, chrome and plaster in the box room (photon mapped) | ![](docs/images/teapot.png) `teapot.toml`: two colored lights, soft shadows |
+| ![](docs/images/monkeys.png) `monkeys.toml`: glass, chrome and plaster in the box room, lit by a ceiling panel (photon mapped) | ![](docs/images/teapot.png) `teapot.toml`: two colored lights, soft shadows |
 | ![](docs/images/still_life.png) `still_life.toml`: scene materials on meshes without MTL files | ![](docs/images/mirrors.png) `mirrors.toml`: facing mirrors, 12 bounces |
 | ![](docs/images/box_scene_whitted.png) `box_scene.toml`: the original 2011 scene | |
 
@@ -103,6 +105,15 @@ position = [0.0, 6.74, -9.25]
 diffuse = [0.5, 0.5, 0.5]
 specular = [1.0, 1.0, 1.0]
 
+[[light]]                 # glowing sphere
+position = [1.0, 9.0, 1.0]
+radius = 0.8
+
+[[light]]                 # one-sided panel; width runs along X where it can
+position = [0.0, 7.3, -9.0]
+size = [4.0, 3.0]
+normal = [0.0, -1.0, 0.0] # the way it faces (this is the default)
+
 [[material]]              # optional; see below
 name = "glass"
 kd = [0.9, 0.9, 0.9]
@@ -173,6 +184,17 @@ interpolated everywhere else. The cache is filled in passes over ever finer
 pixel grids, and each pass's gathers are added in pixel order, so renders stay
 deterministic. The box-room scenes use 8192 rays per gather and render in
 seconds. `--final-gather N` and `--no-irradiance-cache` set these from the CLI.
+
+### Lights
+
+A light is a point unless it has a `radius` (a glowing sphere) or a `size` (a
+one-sided rectangle facing `normal`). Area lights are sampled on a jittered
+grid of `shadow_rays`² points per shading point, each with its own shadow ray,
+so shadows get real penumbras; `soft_shadows` only affects point lights.
+Panels emit like a matte surface, strongest straight ahead. Photons leave
+from random points on an area light, and its projection map is built from
+rays leaving all over it. Camera and mirror rays see area lights glowing;
+gather and shadow rays don't, so their light isn't counted twice.
 
 ### Materials
 
