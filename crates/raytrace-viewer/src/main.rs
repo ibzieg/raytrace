@@ -287,6 +287,10 @@ impl Viewer {
                     ui.label("Bounces");
                     ui.add(DragValue::new(&mut p.max_depth).range(0..=16));
                     ui.end_row();
+                    ui.label("Caustic photons / light")
+                        .on_hover_text("Aimed only at glass and mirrors; 0 takes caustics from the main photons");
+                    ui.add(DragValue::new(&mut p.caustic_photons).range(0..=10_000_000).speed(1000));
+                    ui.end_row();
                     ui.label("Light power");
                     ui.add(DragValue::new(&mut p.light_power).range(0.0..=1e6).speed(10.0));
                     ui.end_row();

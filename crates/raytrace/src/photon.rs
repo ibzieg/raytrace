@@ -202,6 +202,86 @@ enum Kind {
     Caustic,
 }
 
+/// Which photons a tracing pass keeps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pass {
+    /// Every photon.
+    All,
+    /// Direct and indirect only; a separate pass supplies the caustics.
+    Global,
+    /// Caustic paths only, from photons aimed at specular objects.
+    Caustic,
+}
+
+/// Cells of a projection map: equal-area bands of cos θ by slices of φ.
+const PROJECTION_ROWS: usize = 256;
+const PROJECTION_COLS: usize = 512;
+/// Rays per cell side when deciding whether a cell sees a specular object.
+const PROJECTION_SAMPLES: usize = 2;
+
+/// The directions from a light that reach glass or mirrors first, as a set of
+/// equal-area cells (Jensen's projection map). Caustic photons are emitted
+/// only into these, so they aren't wasted on diffuse surfaces.
+struct ProjectionMap {
+    cells: Vec<u32>,
+}
+
+impl ProjectionMap {
+    fn new(world: &World, light: DVec3) -> Self {
+        let specular: Vec<bool> = (0..PROJECTION_ROWS * PROJECTION_COLS)
+            .into_par_iter()
+            .map(|cell| {
+                (0..PROJECTION_SAMPLES * PROJECTION_SAMPLES).any(|k| {
+                    let u = (k % PROJECTION_SAMPLES) as f64 + 0.5;
+                    let v = (k / PROJECTION_SAMPLES) as f64 + 0.5;
+                    let dir = cell_direction(cell, u / PROJECTION_SAMPLES as f64, v / PROJECTION_SAMPLES as f64);
+                    world.intersect(&Ray::new(light, dir), f64::INFINITY).is_some_and(|h| {
+                        let m = &world.materials[h.material];
+                        m.reflectivity + m.transmissivity > 0.0
+                    })
+                })
+            })
+            .collect();
+        // Widen by a cell so objects narrower than the sampling still count.
+        let cells = (0..PROJECTION_ROWS * PROJECTION_COLS)
+            .filter(|&cell| {
+                let (row, col) = ((cell / PROJECTION_COLS) as isize, (cell % PROJECTION_COLS) as isize);
+                (-1..=1).any(|dr| {
+                    let r = row + dr;
+                    (0..PROJECTION_ROWS as isize).contains(&r)
+                        && (-1..=1).any(|dc| {
+                            let c = (col + dc).rem_euclid(PROJECTION_COLS as isize);
+                            specular[r as usize * PROJECTION_COLS + c as usize]
+                        })
+                })
+            })
+            .map(|cell| cell as u32)
+            .collect();
+        Self { cells }
+    }
+
+    /// Fraction of all directions the marked cells cover.
+    fn coverage(&self) -> f64 {
+        self.cells.len() as f64 / (PROJECTION_ROWS * PROJECTION_COLS) as f64
+    }
+
+    /// A uniformly distributed direction within the marked cells.
+    fn sample(&self, rng: &mut Rng) -> DVec3 {
+        let cell = self.cells[rng.below(self.cells.len())] as usize;
+        cell_direction(cell, rng.next_f64(), rng.next_f64())
+    }
+}
+
+/// The direction at (u, v) within a projection map cell. Rows are uniform in
+/// cos θ, so every cell covers the same solid angle.
+fn cell_direction(cell: usize, u: f64, v: f64) -> DVec3 {
+    let (row, col) = (cell / PROJECTION_COLS, cell % PROJECTION_COLS);
+    let z = 1.0 - 2.0 * (row as f64 + u) / PROJECTION_ROWS as f64;
+    let phi = std::f64::consts::TAU * (col as f64 + v) / PROJECTION_COLS as f64;
+    let r = (1.0 - z * z).max(0.0).sqrt();
+    DVec3::new(r * phi.cos(), r * phi.sin(), z)
+}
+
 #[derive(Default)]
 struct Buckets {
     direct: Vec<Photon>,
@@ -248,22 +328,47 @@ pub struct PhotonMaps {
 
 impl PhotonMaps {
     /// Emits `photons_per_light` photons uniformly from each light. A light
-    /// emits `light_power` times its diffuse color in total.
+    /// emits `light_power` times its diffuse color in total. With
+    /// `caustic_photons`, a second pass aims that many more per light at
+    /// glass and mirrors through projection maps and supplies the caustic map.
     pub fn build(world: &World, settings: &PhotonSettings, seed: u64) -> Self {
+        let targeted = settings.caustic_photons > 0;
         let per_light = settings.photons_per_light.max(1) as usize;
         let total = per_light * world.lights.len();
+        let global_pass = if targeted { Pass::Global } else { Pass::All };
 
-        let buckets = (0..total)
+        let mut buckets = (0..total)
             .into_par_iter()
             .fold(Buckets::default, |mut out, i| {
                 let light = &world.lights[i / per_light];
                 let power = light.diffuse * (settings.light_power / per_light as f64);
                 let mut rng = Rng::new(seed.wrapping_mul(0x1000_0000_01B3) ^ i as u64);
                 let ray = Ray::new(light.position, rng.unit_vector());
-                trace_photon(world, settings, ray, power, &mut rng, &mut out);
+                trace_photon(world, settings, global_pass, ray, power, &mut rng, &mut out);
                 out
             })
             .reduce(Buckets::default, Buckets::merge);
+
+        if targeted {
+            let per_light = settings.caustic_photons as usize;
+            let maps: Vec<ProjectionMap> = world.lights.iter().map(|l| ProjectionMap::new(world, l.position)).collect();
+            let caustics = (0..per_light * world.lights.len())
+                .into_par_iter()
+                .fold(Buckets::default, |mut out, i| {
+                    let (light, map) = (&world.lights[i / per_light], &maps[i / per_light]);
+                    if map.cells.is_empty() {
+                        return out;
+                    }
+                    // Only the covered share of the light's power goes this way.
+                    let power = light.diffuse * (settings.light_power * map.coverage() / per_light as f64);
+                    let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ i as u64);
+                    let ray = Ray::new(light.position, map.sample(&mut rng));
+                    trace_photon(world, settings, Pass::Caustic, ray, power, &mut rng, &mut out);
+                    out
+                })
+                .reduce(Buckets::default, Buckets::merge);
+            buckets.caustic = caustics.caustic;
+        }
 
         Self {
             direct: KdTree::build(buckets.direct),
@@ -371,6 +476,7 @@ fn estimate(map: &KdTree, point: DVec3, normal: DVec3, side: Option<DVec3>, radi
 fn trace_photon(
     world: &World,
     settings: &PhotonSettings,
+    pass: Pass,
     mut ray: Ray,
     mut power: DVec3,
     rng: &mut Rng,
@@ -392,10 +498,11 @@ fn trace_photon(
         let diffuse_part = (1.0 - m.reflectivity - m.transmissivity).max(0.0);
         if diffuse_part > 0.0 {
             let photon = Photon { pos: hit.point, power, normal: facing.as_vec3(), axis: 0 };
-            match kind {
-                Kind::Direct => out.direct.push(photon),
-                Kind::Indirect => out.indirect.push(photon),
-                Kind::Caustic => out.caustic.push(photon),
+            match (kind, pass) {
+                (Kind::Direct, Pass::All | Pass::Global) => out.direct.push(photon),
+                (Kind::Indirect, Pass::All | Pass::Global) => out.indirect.push(photon),
+                (Kind::Caustic, Pass::All | Pass::Caustic) => out.caustic.push(photon),
+                _ => {}
             }
         }
 
@@ -403,6 +510,10 @@ fn trace_photon(
         let p_diffuse = diffuse.element_sum() / 3.0;
         let xi = rng.next_f64();
         if xi < p_diffuse {
+            if pass == Pass::Caustic {
+                // Past a diffuse bounce the path is no longer a caustic.
+                return;
+            }
             power *= diffuse / p_diffuse;
             ray = Ray::new(hit.point, cosine_direction(facing, rng));
             kind = Kind::Indirect;
@@ -486,6 +597,30 @@ mod tests {
         let got = mean_estimate(&maps.direct);
         assert!((got / expected - 1.0).abs() < 0.03, "direct {got} vs {expected}");
         assert!(maps.indirect.is_empty(), "black walls absorb everything");
+    }
+
+    /// A clear glass ball beside the light: every photon that reaches it ends
+    /// as a caustic on the black walls, so the caustic map's total power is the
+    /// light's power times the share of directions the ball covers, whether
+    /// caustics come from the main photons or a targeted pass.
+    #[test]
+    fn targeted_caustics_carry_the_same_power() {
+        let (mut world, settings) = light_in_sphere(0.0);
+        world.materials.push(Material { transmissivity: 1.0, reflectivity: 0.0, ..Material::default() });
+        let (distance, radius) = (2.0, 0.8);
+        world.spheres.push(Sphere { center: DVec3::new(distance, 0.0, 0.0), radius, material: 1 });
+        let cos_half_angle = (1.0 - (radius / distance).powi(2)).sqrt();
+        let expected = LIGHT_POWER * (1.0 - cos_half_angle) / 2.0;
+        let total = |maps: &PhotonMaps| maps.caustic.photons().iter().map(|p| p.power.x).sum::<f64>();
+
+        let untargeted = PhotonMaps::build(&world, &PhotonSettings { caustic_photons: 0, ..settings.clone() }, 1);
+        let targeted = PhotonMaps::build(&world, &PhotonSettings { caustic_photons: 50_000, ..settings }, 1);
+        for (name, maps) in [("untargeted", &untargeted), ("targeted", &targeted)] {
+            let got = total(maps);
+            assert!((got / expected - 1.0).abs() < 0.03, "{name} caustic power {got} vs {expected}");
+        }
+        // The targeted pass spends its photons on the ball, not the walls.
+        assert!(targeted.caustic.len() > 4 * untargeted.caustic.len());
     }
 
     /// Inside a closed diffuse sphere every bounce spreads evenly, so the

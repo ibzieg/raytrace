@@ -14,7 +14,8 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
   gathering over precomputed irradiance with an irradiance cache (kd-tree,
   k-nearest density estimates over a flattened disc). Photons carry physical
   power and follow one path each by Russian roulette on the material's
-  reflectances. The 2011 direct-map shading is still available.
+  reflectances. Caustic photons are aimed at glass and mirrors through
+  projection maps. The 2011 direct-map shading is still available.
 - Triangle meshes from Wavefront OBJ/MTL, accelerated by a binned-SAH BVH, plus
   analytic spheres
 - N-rooks anti-aliasing; all cores via rayon; deterministic output
@@ -128,6 +129,7 @@ refractions = true
 enabled = false
 photons_per_light = 100000
 light_power = 1000.0       # per light, times its diffuse color
+caustic_photons = 100000   # per light, aimed at glass and mirrors; 0 = use the main photons
 direct_lighting = "rays"   # or "map": read the direct photon map, as in 2011
 radius = { direct = 1.0, indirect = 1.0, caustic = 1.0 }   # max search radius
 gather = { direct = 200, indirect = 200, caustic = 80 }    # nearest photons; 0 = all in radius
@@ -145,6 +147,14 @@ Russian roulette picks a diffuse bounce, mirror reflection, refraction or
 absorption in proportion to the material's reflectances. Closed rooms with
 light walls get much more bounce light than open scenes, as they should.
 `exposure` scales each map's contribution on top.
+
+Caustics come from a separate batch of `caustic_photons` per light. Each light
+gets a projection map: the sphere of directions around it, split into
+equal-area cells, with the cells whose first hit is glass or a mirror marked.
+Caustic photons are emitted only into those cells, carrying the share of the
+light's power the cells cover, so nearly all of them end up in caustics
+instead of a few percent. The main photons then supply only the direct and
+indirect maps.
 
 Each map's estimate uses the `gather` nearest photons, out to `radius` at
 most, so it sharpens where photons are dense (caustics) and widens where they

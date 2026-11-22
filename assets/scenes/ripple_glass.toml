@@ -100,4 +100,5 @@ soft_shadows = true
 enabled = true
 photons_per_light = 2000000
 light_power = 650.0
+caustic_photons = 600000
 radius = { direct = 0.9, indirect = 1.5, caustic = 0.12 }

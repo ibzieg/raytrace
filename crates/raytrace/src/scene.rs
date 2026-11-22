@@ -229,6 +229,9 @@ pub struct PhotonSettings {
     /// Power each light emits, times its diffuse color. Direct light falls
     /// off as power / (4π d²).
     pub light_power: f64,
+    /// Extra photons per light aimed only at glass and mirrors, which supply
+    /// the caustic map. 0 takes caustics from the main photons instead.
+    pub caustic_photons: u32,
     pub direct_lighting: DirectLighting,
     /// Maximum search radius of each map's estimate.
     pub radius: PhotonTriple,
@@ -254,6 +257,7 @@ impl Default for PhotonSettings {
             photons_per_light: 100_000,
             max_depth: 5,
             light_power: 1000.0,
+            caustic_photons: 100_000,
             direct_lighting: DirectLighting::default(),
             radius: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             exposure: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
@@ -272,6 +276,7 @@ impl PhotonSettings {
         self.photons_per_light == other.photons_per_light
             && self.max_depth == other.max_depth
             && self.light_power == other.light_power
+            && self.caustic_photons == other.caustic_photons
     }
 }
 

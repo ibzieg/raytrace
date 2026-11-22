@@ -36,6 +36,10 @@ enum Command {
         /// Photons emitted per light (implies --photons).
         #[arg(long)]
         photon_count: Option<u32>,
+        /// Extra photons per light aimed at glass and mirrors for the caustic
+        /// map; 0 takes caustics from the main photons.
+        #[arg(long)]
+        caustic_photons: Option<u32>,
         /// Take direct light from the photon map instead of shadow rays, as
         /// the 2011 version did.
         #[arg(long)]
@@ -82,6 +86,7 @@ fn main() -> Result<()> {
             samples,
             photons,
             photon_count,
+            caustic_photons,
             direct_map,
             final_gather,
             no_irradiance_cache,
@@ -107,6 +112,9 @@ fn main() -> Result<()> {
             let p = &mut scene.file.photon;
             if let Some(n) = photon_count {
                 p.photons_per_light = n;
+            }
+            if let Some(n) = caustic_photons {
+                p.caustic_photons = n;
             }
             p.enabled |= photons || photon_count.is_some();
             if direct_map {
