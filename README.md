@@ -21,7 +21,8 @@ A ray tracer with photon mapping, written in Rust. It is a port of a
 
 ## Example scenes
 
-All in `assets/scenes/`. The first four were converted from the 2011 project.
+All in `assets/scenes/`. `box_scene.toml` and the three listed under the table
+were converted from the 2011 project.
 
 | | |
 |---|---|
@@ -31,6 +32,14 @@ All in `assets/scenes/`. The first four were converted from the 2011 project.
 | ![](docs/images/box_scene_whitted.png) `box_scene.toml`: the original 2011 scene | |
 
 Also from 2011: `box_test_4.toml`, `reflect_ring.toml`, `box_parallelepiped.toml`.
+
+### Animation
+
+![Camera orbiting the rippled glass pane](docs/images/ripple_glass_orbit.gif)
+
+`ripple_glass.toml` with the camera swinging 36° around the pane: the view
+through the glass shifts while the caustics on the floor stay put. 120 CLI
+renders at 640×480, one scene file per frame, assembled with ffmpeg.
 
 ## Usage
 
