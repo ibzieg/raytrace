@@ -22,9 +22,10 @@ All in `assets/scenes/`. The first four were converted from the 2011 project.
 
 | | |
 |---|---|
-| ![](docs/images/caustics.png) `caustics.toml`: glass focusing light (photon mapped) | ![](docs/images/monkeys.png) `monkeys.toml`: glass, chrome and plaster in the box room (photon mapped) |
-| ![](docs/images/teapot.png) `teapot.toml`: two colored lights, soft shadows | ![](docs/images/still_life.png) `still_life.toml`: scene materials on meshes without MTL files |
-| ![](docs/images/mirrors.png) `mirrors.toml`: facing mirrors, 12 bounces | ![](docs/images/box_scene_whitted.png) `box_scene.toml`: the original 2011 scene |
+| ![](docs/images/ripple_glass.png) `ripple_glass.toml`: a rippled glass pane bending the view behind it and casting caustics (photon mapped) | ![](docs/images/caustics.png) `caustics.toml`: glass focusing light (photon mapped) |
+| ![](docs/images/monkeys.png) `monkeys.toml`: glass, chrome and plaster in the box room (photon mapped) | ![](docs/images/teapot.png) `teapot.toml`: two colored lights, soft shadows |
+| ![](docs/images/still_life.png) `still_life.toml`: scene materials on meshes without MTL files | ![](docs/images/mirrors.png) `mirrors.toml`: facing mirrors, 12 bounces |
+| ![](docs/images/box_scene_whitted.png) `box_scene.toml`: the original 2011 scene | |
 
 Also from 2011: `box_test_4.toml`, `reflect_ring.toml`, `box_parallelepiped.toml`.
 
@@ -149,6 +150,7 @@ crates/raytrace-cli   `raytrace` binary
 crates/raytrace-viewer  egui interactive viewer
 assets/scenes         renderable TOML scenes
 assets/objects        OBJ/MTL meshes
+crates/raytrace/examples  mesh generators (`cargo run -p raytrace --example ripple_glass -- assets/objects`)
 legacy/scenes         original XML scenes
 ```
 
