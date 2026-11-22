@@ -4,6 +4,7 @@
 //! [`PhotonMaps::build`] → [`Renderer::render`].
 
 pub mod geometry;
+pub mod irradiance_cache;
 pub mod legacy;
 pub mod material;
 pub mod mesh;

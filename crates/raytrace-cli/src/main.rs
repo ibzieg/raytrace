@@ -44,6 +44,10 @@ enum Command {
         /// directly.
         #[arg(long)]
         final_gather: Option<u32>,
+        /// Gather at every shading point instead of interpolating cached
+        /// gathers.
+        #[arg(long)]
+        no_irradiance_cache: bool,
         #[arg(long)]
         soft_shadows: bool,
         /// Exposure in stops (2^EV scale) applied when writing the PNG.
@@ -80,6 +84,7 @@ fn main() -> Result<()> {
             photon_count,
             direct_map,
             final_gather,
+            no_irradiance_cache,
             soft_shadows,
             exposure,
             gamma,
@@ -110,6 +115,7 @@ fn main() -> Result<()> {
             if let Some(n) = final_gather {
                 p.final_gather = n;
             }
+            p.irradiance_cache &= !no_irradiance_cache;
 
             let world = World::from_scene(&scene);
             eprintln!(

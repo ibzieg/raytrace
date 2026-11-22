@@ -301,9 +301,23 @@ impl Viewer {
                             ui.selectable_value(&mut p.direct_lighting, DirectLighting::Map, "Photon map");
                         });
                     ui.end_row();
-                    ui.label("Final gather rays")
-                        .on_hover_text("Rays per shading point for indirect light; 0 reads the indirect map directly");
-                    ui.add(DragValue::new(&mut p.final_gather).range(0..=4096).speed(4.0));
+                    ui.label("Final gather rays").on_hover_text(
+                        "Rays per gather for indirect light; 0 reads the indirect map directly. \
+                         With the irradiance cache, thousands are affordable.",
+                    );
+                    ui.add(DragValue::new(&mut p.final_gather).range(0..=65536).speed(16.0));
+                    ui.end_row();
+                    let gathering = p.final_gather > 0;
+                    ui.add_enabled(gathering, egui::Label::new("Irradiance cache"))
+                        .on_hover_text("Interpolate gathers made at sparse points");
+                    ui.add_enabled(gathering, egui::Checkbox::without_text(&mut p.irradiance_cache));
+                    ui.end_row();
+                    ui.add_enabled(gathering && p.irradiance_cache, egui::Label::new("Cache accuracy"))
+                        .on_hover_text("Smaller places cache points closer together");
+                    ui.add_enabled(
+                        gathering && p.irradiance_cache,
+                        DragValue::new(&mut p.cache_accuracy).range(0.02..=1.0).speed(0.005),
+                    );
                     ui.end_row();
                     let direct_map = p.direct_lighting == DirectLighting::Map;
                     for (label, uses_map, radius, gather, exposure) in [

@@ -172,6 +172,16 @@ impl World {
         Self { triangles, spheres, materials, lights, bvh }
     }
 
+    /// Length of the diagonal of the box around all geometry.
+    pub fn extent(&self) -> f64 {
+        let mut bounds = self.bvh.first().map_or(Aabb::EMPTY, |n| n.bounds);
+        for s in &self.spheres {
+            bounds.grow(s.center - s.radius);
+            bounds.grow(s.center + s.radius);
+        }
+        if bounds.min.x > bounds.max.x { 0.0 } else { bounds.min.distance(bounds.max) }
+    }
+
     /// Nearest intersection closer than `t_max`.
     pub fn intersect(&self, ray: &Ray, t_max: f64) -> Option<Hit> {
         let mut best_t = t_max;

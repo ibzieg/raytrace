@@ -120,6 +120,9 @@ impl Job {
 
         let cam = &input.scene.file.camera;
         let preview_settings = RenderSettings { samples: 1, ..input.render.clone() };
+        // Previews read the indirect map; final gathering waits for the full
+        // render so the camera stays responsive.
+        let preview_photon = PhotonSettings { final_gather: 0, ..input.photon.clone() };
         let mut renderer = Renderer {
             world: &input.world,
             settings: &input.render,
@@ -135,12 +138,14 @@ impl Job {
         if input.preview_only || (self.width * self.height) as usize >= PREVIEW_MIN_PIXELS {
             self.set_stage(Stage::Preview, &ctx);
             renderer.settings = &preview_settings;
+            renderer.photon_settings = &preview_photon;
             let (pw, ph) = (self.width / PREVIEW_DOWNSCALE, self.height / PREVIEW_DOWNSCALE);
             if let Some(preview) = renderer.render_with(pw.max(1), ph.max(1), Some(&self.cancel), &|_, _| {}) {
                 self.blit_upscaled(&preview);
                 ctx.request_repaint();
             }
             renderer.settings = &input.render;
+            renderer.photon_settings = &input.photon;
             if input.preview_only {
                 let stage = if self.cancelled() { Stage::Cancelled } else { Stage::Previewed };
                 return self.set_stage(stage, &ctx);

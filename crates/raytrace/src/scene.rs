@@ -233,11 +233,17 @@ pub struct PhotonSettings {
     pub radius: PhotonTriple,
     pub exposure: PhotonTriple,
     pub gather: GatherCounts,
-    /// Final gather rays per shading point for indirect light; 0 reads the
-    /// indirect map directly, which is faster but blotchy. Rooms with small,
-    /// very bright patches (a light near a wall) need many rays to avoid
-    /// speckle.
+    /// Rays per final gather for indirect light; 0 reads the indirect map
+    /// directly, which is faster but blotchy. Rooms with small, very bright
+    /// patches (a light near a wall) need thousands to avoid noise, which the
+    /// irradiance cache makes affordable.
     pub final_gather: u32,
+    /// Interpolate final gathers from sparse points (Ward's irradiance
+    /// cache) instead of gathering at every shading point.
+    pub irradiance_cache: bool,
+    /// Largest interpolation error the cache allows; smaller places records
+    /// closer together.
+    pub cache_accuracy: f64,
 }
 
 impl Default for PhotonSettings {
@@ -252,6 +258,8 @@ impl Default for PhotonSettings {
             exposure: PhotonTriple { direct: 1.0, indirect: 1.0, caustic: 1.0 },
             gather: GatherCounts::default(),
             final_gather: 0,
+            irradiance_cache: true,
+            cache_accuracy: 0.25,
         }
     }
 }
